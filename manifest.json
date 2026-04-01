@@ -1,0 +1,28 @@
+{
+  "name": "github-ci-channel",
+  "version": "1.0.0",
+  "description": "Claude Code MCP channel plugin — pushes GitHub Actions CI/CD results into running Claude Code sessions",
+  "author": "drmf-cz",
+  "license": "MIT",
+  "type": "channel",
+  "channel": {
+    "name": "github-ci",
+    "description": "Receives GitHub Actions webhook events and delivers CI/CD notifications to Claude Code",
+    "events": ["workflow_run", "workflow_job", "check_suite", "check_run"]
+  },
+  "mcp": {
+    "command": "bun",
+    "args": ["run", "src/index.ts"],
+    "env": {
+      "WEBHOOK_PORT": "9443",
+      "GITHUB_WEBHOOK_SECRET": "",
+      "GITHUB_TOKEN": ""
+    }
+  },
+  "requirements": {
+    "claudeCode": ">=2.1.80",
+    "bun": ">=1.1.0"
+  },
+  "repository": "https://github.com/drmf-cz/claude-code-github-ci-channel",
+  "readme": "README.md"
+}

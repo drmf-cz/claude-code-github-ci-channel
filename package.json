@@ -1,0 +1,29 @@
+{
+  "name": "claude-code-github-ci-channel",
+  "version": "0.1.0",
+  "description": "Claude Code MCP channel plugin — pushes GitHub Actions CI/CD results into running Claude Code sessions",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target bun",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src/",
+    "lint:fix": "biome check --write src/",
+    "test": "bun test",
+    "test:coverage": "bun test --coverage"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.10.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "typescript": "^5.7.3",
+    "@types/bun": "^1.2.0"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "keywords": ["claude-code", "mcp", "github-actions", "ci-cd", "channel", "webhook"],
+  "license": "MIT"
+}

@@ -1,0 +1,53 @@
+# Add this workflow to YOUR repository to notify Claude Code on CI completion.
+# It fires after any of your named CI workflows complete.
+
+name: Notify Claude Code Channel
+
+on:
+  workflow_run:
+    workflows: ["CI", "Tests", "Build"]  # Match your CI workflow names
+    types: [completed]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Send CI result to Claude Code channel
+        env:
+          WEBHOOK_URL: ${{ secrets.CLAUDE_WEBHOOK_URL }}
+          WEBHOOK_SECRET: ${{ secrets.CLAUDE_WEBHOOK_SECRET }}
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg action "completed" \
+            --arg name "${{ github.event.workflow_run.name }}" \
+            --arg conclusion "${{ github.event.workflow_run.conclusion }}" \
+            --arg status "${{ github.event.workflow_run.status }}" \
+            --arg branch "${{ github.event.workflow_run.head_branch }}" \
+            --argjson run_number "${{ github.event.workflow_run.run_number }}" \
+            --arg html_url "${{ github.event.workflow_run.html_url }}" \
+            --arg started_at "${{ github.event.workflow_run.run_started_at }}" \
+            --arg updated_at "${{ github.event.workflow_run.updated_at }}" \
+            --arg commit_msg "${{ github.event.workflow_run.head_commit.message }}" \
+            --arg repo "${{ github.repository }}" \
+            --arg actor "${{ github.actor }}" \
+            '{
+              action: $action,
+              workflow_run: {
+                name: $name, conclusion: $conclusion, status: $status,
+                head_branch: $branch, run_number: $run_number, html_url: $html_url,
+                run_started_at: $started_at, updated_at: $updated_at,
+                head_commit: { message: $commit_msg }
+              },
+              repository: { full_name: $repo },
+              sender: { login: $actor }
+            }')
+
+          SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $2}')
+
+          curl -sf -X POST "$WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -H "X-GitHub-Event: workflow_run" \
+            -H "X-Hub-Signature-256: sha256=$SIGNATURE" \
+            -H "X-GitHub-Delivery: ${{ github.run_id }}" \
+            -d "$PAYLOAD"

@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "github-ci": {
+      "command": "bun",
+      "args": ["run", "/path/to/claude-code-github-ci-channel/src/index.ts"],
+      "env": {
+        "WEBHOOK_PORT": "9443",
+        "GITHUB_WEBHOOK_SECRET": "your-shared-secret-here",
+        "GITHUB_TOKEN": "ghp_xxxxxxxxxxxx"
+      }
+    }
+  }
+}
