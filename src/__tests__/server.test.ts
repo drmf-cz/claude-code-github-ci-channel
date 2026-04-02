@@ -533,7 +533,8 @@ describe("scheduleReviewNotification — debounce", () => {
     };
     scheduleReviewNotification("acme/repo/1", meta, unresolvedEvent, () => {});
     const entry = pendingReviews.get("acme/repo/1");
-    expect(entry?.events[0].type).toBe("unresolved_thread");
+    expect(entry).toBeDefined();
+    expect(entry?.events[0]?.type).toBe("unresolved_thread");
   });
 
   it("returns false and discards when key is in cooldown", () => {
