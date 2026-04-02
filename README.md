@@ -2,55 +2,63 @@
 
 [![CI](https://github.com/drmf-cz/claude-code-github-ci-channel/actions/workflows/ci.yml/badge.svg)](https://github.com/drmf-cz/claude-code-github-ci-channel/actions/workflows/ci.yml)
 
-> MCP channel plugin that pushes GitHub Actions CI/CD results and PR merge conflicts directly into running Claude Code sessions — triggering automatic investigation and remediation.
+> MCP channel plugin that pushes GitHub Actions CI/CD results and PR merge status directly into running Claude Code sessions — triggering automatic investigation and remediation.
 
 Built on the [Claude Code Channels API](https://docs.anthropic.com/en/docs/claude-code/channels) (research preview, ≥ v2.1.80).
 
 ## What it does
 
-When a CI run completes or a PR gets a merge conflict, the plugin pushes an actionable notification into your active Claude Code session. Claude reads it as a directive and acts:
+The plugin runs inside your Claude Code session and listens for GitHub events. When something requires attention, it pushes an actionable instruction directly into the session — Claude reads it and acts on it immediately.
 
-| Event | Condition | Claude does |
+| GitHub event | Condition | What Claude does |
 |---|---|---|
 | `workflow_run` completed | failure on **main/master** | Fetches logs, diagnoses root cause, spawns subagent to fix and push |
 | `workflow_run` completed | failure on feature branch | Fetches logs, spawns subagent to investigate |
-| `workflow_run` completed | success | Silent acknowledgement |
+| `workflow_run` completed | success | Silent — no notification |
+| `push` to main/master | open PRs exist | Checks each PR's merge status via API, notifies on `dirty` or `behind` |
 | `pull_request` opened/synced | `mergeable_state: dirty` | Spawns subagent to rebase and resolve conflicts |
 | `pull_request` opened/synced | `mergeable_state: behind` | Spawns subagent to rebase cleanly |
-| `pull_request` opened/synced | `clean` / `unknown` / `blocked` | Silently skipped |
 
-The notification content **is the prompt** — it contains explicit tool calls and subagent instructions that Claude executes immediately.
+> **Why `push` events for PRs?** GitHub does not fire a `pull_request` event when the base branch advances and makes a PR go `behind`. The only way to detect this is to listen to `push` on main and then query the API for open PRs.
 
 ## Architecture
 
 ```
-GitHub Actions / PR event
-        │  HMAC-SHA256 signed webhook
-        ▼
-[cloudflared tunnel]  ←── runs locally, free, no account needed
-        │  forwards to localhost:9443
-        ▼
-HTTP server :9443       (this plugin — runs as MCP subprocess inside Claude Code)
-        │  verifySignature → isActionable → parse*Event
-        ▼
-notifications/claude/channel
-        │  content = actionable instruction
-        ▼
-Claude Code session  ←── reads directive, calls fetch_workflow_logs, spawns subagents
+GitHub Actions / PR / push event
+          │  HMAC-SHA256 signed webhook
+          ▼
+[cloudflared tunnel]        ← free, no account needed for temp URLs
+          │
+          ▼
+HTTP :9443  (webhook receiver — subprocess of Claude Code)
+          │
+          ├─ workflow_run/job/check_suite → parseWorkflowEvent()
+          ├─ pull_request (dirty/behind)  → parsePullRequestEvent()
+          └─ push to main                → checkPRsAfterPush() [async, API call]
+                                                    │
+                                                    ▼
+                                        notifications/claude/channel
+                                                    │
+                                                    ▼
+                                        Claude Code session
+                                          ├─ fetch_workflow_logs tool
+                                          └─ spawns subagents to fix/rebase
 ```
 
-Two additional modes without a tunnel — see [Option B](#option-b-github-cli-events-watcher-no-tunnel) below.
+The MCP server is started automatically by Claude Code as a subprocess — you never run it manually.
 
 ## Requirements
 
 - [Bun](https://bun.sh) ≥ 1.1.0
 - Claude Code ≥ 2.1.80
-- [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) (for webhook mode) or `gh` CLI (for watcher mode)
-- GitHub personal access token — scopes: `repo` + `actions:read`
+- [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) (or ngrok)
+- GitHub PAT — fine-grained: **Actions: Read** + **Pull requests: Read** | classic: `public_repo`
 
-## Option A: Webhook + Tunnel (recommended)
+> `GITHUB_TOKEN` is required for two features: `fetch_workflow_logs` (log fetching) and `checkPRsAfterPush` (listing open PRs after a push). Without it, those features silently no-op.
 
-Real-time, all event types including `workflow_job` and `check_suite`.
+## Setup (Option A — Webhook + Tunnel)
+
+Real-time. Supports all event types including `workflow_job`, `check_suite`, and PR status.
 
 ### 1. Install
 
@@ -64,57 +72,57 @@ bun install
 
 ```bash
 openssl rand -hex 32
-# → e.g. a3f2c1d4e5b6...  save this, you'll need it in two places
+# → copy the output — you'll paste it into GitHub and .mcp.json
 ```
 
 ### 3. Start the tunnel
 
 ```bash
-# cloudflared (no account needed for temporary URLs)
 cloudflared tunnel --url http://localhost:9443
-# → prints: https://random-name.trycloudflare.com  ← copy this
+# → prints: https://random-name.trycloudflare.com  ← copy this URL
 ```
 
-Leave it running. Each restart gives a new URL — update the GitHub webhook URL when that happens.
-To get a stable URL: [Cloudflare named tunnels](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/) (free account) or [ngrok static domains](https://ngrok.com/blog-post/free-static-domains-ngrok-users).
+Leave the tunnel running. Each restart produces a new URL — update GitHub when that happens.  
+For a stable URL: [Cloudflare named tunnels](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/) (free account) or [ngrok static domain](https://ngrok.com/blog-post/free-static-domains-ngrok-users) (free tier).
 
-### 4. Register webhook on GitHub
+### 4. Register the webhook on GitHub
 
 1. Repo → **Settings → Webhooks → Add webhook**
-2. **Payload URL**: your tunnel URL
-3. **Content type**: `application/json`
-4. **Secret**: your `GITHUB_WEBHOOK_SECRET` value
-5. **Events** — select individual events and tick:
+2. **Payload URL** — paste your tunnel URL
+3. **Content type** — `application/json`
+4. **Secret** — paste the value from step 2
+5. **Which events** — choose *Let me select individual events*, then tick:
    - ✅ Workflow runs
    - ✅ Workflow jobs
    - ✅ Check suites
    - ✅ Pull requests
-   - ✅ Pushes  ← required for detecting PRs that fall behind after a merge to main
-6. **Add webhook** — you should see a green ✓ ping response
+   - ✅ Pushes
+6. Click **Add webhook** — GitHub sends a ping; you should see a green ✓
 
-### 5. Register with Claude Code
+### 5. Configure `.mcp.json`
 
-Create or update `.mcp.json` (project-level) or `~/.mcp.json` (global):
+Create or edit `~/.mcp.json` (all projects) or `.mcp.json` in your project root:
 
 ```json
 {
   "mcpServers": {
     "github-ci": {
-      "command": "/path/to/.bun/bin/bun",
+      "command": "/home/you/.bun/bin/bun",
       "args": ["run", "/path/to/claude-code-github-ci-channel/src/index.ts"],
       "env": {
         "WEBHOOK_PORT": "9443",
         "GITHUB_WEBHOOK_SECRET": "your-secret-from-step-2",
-        "GITHUB_TOKEN": "ghp_your_token"
+        "GITHUB_TOKEN": "your-pat"
       }
     }
   }
 }
 ```
 
-> The `env` block in `.mcp.json` **is the config** — Claude Code passes these directly to the subprocess. You do not need a `.env` file. If a `.env` file exists in the repo directory, Bun loads it too, but `.mcp.json` env values take precedence. Keep them in sync to avoid confusion.
-
-Use the **full path** to `bun` — Claude Code spawns processes without your shell PATH. Find it with `which bun`.
+**Notes:**
+- Use the **absolute path** to `bun` (`which bun`). Claude Code spawns subprocesses without your shell PATH.
+- The `env` block here is the only config you need — no `.env` file required. Claude Code injects these directly into the subprocess.
+- A `.env` file in the repo directory is loaded by Bun for manual runs only. `.mcp.json` values always take precedence.
 
 ### 6. Start Claude Code
 
@@ -127,19 +135,24 @@ You should see:
 Listening for channel messages from: server:github-ci
 ```
 
+The server is now running. Push a commit, trigger a CI run, or let a PR fall behind — notifications will appear in your session automatically.
+
 ---
 
-## Option B: GitHub CLI Events watcher (no tunnel)
+## Option B — GitHub CLI Events watcher (no tunnel)
 
-Polls the GitHub Events API every ~60 s. No tunnel, no webhook setup — just `gh auth login`.
+No tunnel, no webhook config. Polls the [GitHub Events API](https://docs.github.com/en/rest/activity/events) using your existing `gh` CLI session.
 
-**Trade-off:** ~30–60 s latency; only `WorkflowRunEvent` available (no `workflow_job` or PR events).
+**Trade-offs vs Option A:**
+- ~30–60 s latency (server-dictated poll interval)
+- `WorkflowRunEvent` only — no `workflow_job`, `check_suite`, or PR events
+- No "behind PR" detection (Events API doesn't include pull request merge status)
 
 ```json
 {
   "mcpServers": {
     "github-ci": {
-      "command": "/path/to/.bun/bin/bun",
+      "command": "/home/you/.bun/bin/bun",
       "args": ["run", "/path/to/claude-code-github-ci-channel/src/ghwatch.ts"],
       "env": {
         "WATCH_REPOS": "owner/repo1,owner/repo2"
@@ -149,20 +162,25 @@ Polls the GitHub Events API every ~60 s. No tunnel, no webhook setup — just `g
 }
 ```
 
-Auth: uses `gh auth token` automatically, or set `GITHUB_TOKEN` explicitly.
+Auth: uses `gh auth token` automatically. Override with `GITHUB_TOKEN` if needed.
+
+Start the same way:
+```bash
+claude --dangerously-load-development-channels server:github-ci
+```
 
 ---
 
 ## Environment variables
 
-| Variable | Required | Default | Description |
+| Variable | Option A | Option B | Description |
 |---|---|---|---|
-| `WEBHOOK_PORT` | No | `9443` | HTTP port for the webhook receiver |
-| `GITHUB_WEBHOOK_SECRET` | Yes (prod) | — | HMAC-SHA256 secret — must match GitHub webhook settings exactly |
-| `GITHUB_TOKEN` | No | — | PAT with `actions:read` for `fetch_workflow_logs` tool |
-| `WATCH_REPOS` | Option B only | — | Comma-separated `owner/repo` list for Events API watcher |
+| `WEBHOOK_PORT` | optional | — | HTTP port for webhook receiver (default: `9443`) |
+| `GITHUB_WEBHOOK_SECRET` | required | — | HMAC-SHA256 secret — must match GitHub webhook settings exactly |
+| `GITHUB_TOKEN` | required* | optional | PAT for log fetching and PR status checks |
+| `WATCH_REPOS` | — | required | Comma-separated `owner/repo` list |
 
-If `GITHUB_WEBHOOK_SECRET` is unset, all requests are accepted (dev mode). A warning is logged.
+\* Without `GITHUB_TOKEN`, `fetch_workflow_logs` and behind-PR detection silently no-op.
 
 ---
 
@@ -170,68 +188,61 @@ If `GITHUB_WEBHOOK_SECRET` is unset, all requests are accepted (dev mode). A war
 
 ### MCP shows red / "Failed to reconnect"
 
-**Most likely cause: port 9443 already in use.** Claude Code spawns the server as a subprocess. If a previous session left a stale process, the new one fails to bind and the MCP connection dies.
+Port 9443 is likely still held by a previous session. Claude Code spawns the server as a subprocess — if an old one didn't exit cleanly, the new one fails to bind.
 
 ```bash
-# Find and kill the stale process
-lsof -i :9443
-kill <PID>
-# Then restart Claude Code
+lsof -i :9443        # find the process
+kill <PID>           # free the port
+# restart Claude Code
 ```
 
-The server now emits a clear diagnostic: `ERROR: Port 9443 is already in use.`
+The server logs: `ERROR: Port 9443 is already in use. Kill the existing process (lsof -i :9443) and restart Claude Code.`
 
-### All webhooks return 401 Unauthorized
+### Webhooks return 401 Unauthorized
 
-The HMAC signature doesn't match — the server and GitHub are using different secrets. This happens when:
+HMAC signature mismatch — the server and GitHub are using different secrets.
 
-1. **`.env` and GitHub webhook have different secrets.** Bun auto-loads `.env` from the working directory. If `.env` has a different value than what's configured in GitHub webhook settings, every request fails.
-   - Fix: ensure `GITHUB_WEBHOOK_SECRET` in `.env` matches exactly what you pasted into GitHub.
+- **Most common cause:** a `.env` file in the repo directory has a different `GITHUB_WEBHOOK_SECRET` than `.mcp.json`. Bun loads `.env` automatically, but `.mcp.json` values take precedence. If you have both, make sure they match, or delete `.env`.
+- Also check that the secret in `.mcp.json` exactly matches what was pasted into GitHub webhook settings (no extra whitespace).
 
-2. **`GITHUB_WEBHOOK_SECRET` set in shell environment.** If the variable is exported in your shell, it overrides `.env`. Unset it or ensure consistency.
+### No notification when a PR falls behind
+
+Check that **Pushes** is ticked in your GitHub webhook event settings. Without push events, the server never knows main has advanced. Also confirm `GITHUB_TOKEN` is set — it's required to query the PR list after a push.
 
 ### "bun: command not found" in MCP logs
 
-Claude Code spawns processes without your interactive shell PATH. Bun installs to `~/.bun/bin/bun` which may not be in the PATH MCP uses.
+Use the absolute path in `.mcp.json`: `"command": "/home/you/.bun/bin/bun"`. Find the path with `which bun`.
 
-Fix: use the **absolute path** in `.mcp.json`:
-```json
-"command": "/home/you/.bun/bin/bun"
-```
+### `claude_desktop_config.json` vs `.mcp.json`
 
-### Config file confusion: `claude_desktop_config.json` vs `.mcp.json`
+These are for different apps:
+- `~/.config/Claude/claude_desktop_config.json` → Claude **Desktop** (GUI)
+- `~/.mcp.json` or `.mcp.json` → Claude Code **CLI** (`claude` command)
 
-- `~/.config/Claude/claude_desktop_config.json` — Claude **Desktop** (GUI app)
-- `~/.mcp.json` or `.mcp.json` — Claude Code **CLI** (`claude` command)
+`--dangerously-load-development-channels` reads from `.mcp.json`, not the Desktop config.
 
-The `claude --dangerously-load-development-channels server:github-ci` command reads from `.mcp.json`. Changes to `claude_desktop_config.json` have no effect on the CLI.
+### Tunnel URL changed
 
-### Tunnel URL changed, webhooks stopped arriving
-
-Cloudflared free tier generates a new random URL on each restart. Update the GitHub webhook payload URL: Repo → Settings → Webhooks → Edit → update URL. For a stable URL use a named Cloudflare tunnel or ngrok static domain.
+Cloudflared free tier gives a new random URL on each restart. Update it: Repo → Settings → Webhooks → Edit → change Payload URL. For a permanent URL use a named tunnel or ngrok static domain.
 
 ---
 
 ## Development
 
 ```bash
-bun test              # Run all 31 tests
-bun run typecheck     # TypeScript strict check
-bun run lint          # Biome linter (v2)
-bun run lint:fix      # Auto-fix
-bun run build         # Build to dist/
+bun test              # 32 tests
+bun run typecheck     # tsc --noEmit (strict + noUncheckedIndexedAccess)
+bun run lint          # Biome v2
+bun run lint:fix      # Auto-fix lint issues
+bun run build         # Bundle to dist/
 ```
 
-## Security notes
+## Security
 
-- **HMAC-SHA256** with `timingSafeEqual` — constant-time comparison prevents timing attacks
-- **`.env` is gitignored** — never commit real secrets
-- **Fallback handler** does not echo raw webhook payload — prevents prompt injection from crafted GitHub events
-- **`GITHUB_TOKEN` scope** — use a fine-grained PAT with `actions:read` only; no write access needed
-- **Dev mode** — if `GITHUB_WEBHOOK_SECRET` is unset, all requests are accepted and a warning is logged; never run without a secret in production
+- HMAC-SHA256 verification uses `timingSafeEqual` — constant-time, no timing oracle
+- Fallback handler emits only `event + action + repo` — raw payload is never forwarded to Claude (prompt injection guard)
+- `GITHUB_TOKEN` is read-only (`actions:read` + `pull_requests:read`) — no write access needed
+- `.env` is gitignored — secrets stay local
+- Dev mode (no `GITHUB_WEBHOOK_SECRET`): all requests accepted, warning logged — never deploy without a secret
 
-## Documentation
-
-- [AGENTS.md](AGENTS.md) — Architecture deep-dive, security analysis, deployment guide
-- [docs/mcp-json-example.json](docs/mcp-json-example.json) — `.mcp.json` snippet
-- [docs/channels-json-example.json](docs/channels-json-example.json) — channels config example
+See [AGENTS.md](AGENTS.md) for the full security analysis and architecture reference.
