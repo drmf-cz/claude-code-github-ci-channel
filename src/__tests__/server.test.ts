@@ -46,10 +46,22 @@ describe("verifySignature", () => {
     expect(verifySignature("payload", null)).toBe(false);
   });
 
-  it("returns true (dev mode) when no secret is configured", () => {
+  it("returns false (fail-closed) when no secret is configured", () => {
     process.env.GITHUB_WEBHOOK_SECRET = undefined;
-    expect(verifySignature("anything", null)).toBe(true);
-    expect(verifySignature("anything", "wrong-sig")).toBe(true);
+    delete process.env.WEBHOOK_DEV_MODE;
+    expect(verifySignature("anything", null)).toBe(false);
+    expect(verifySignature("anything", "wrong-sig")).toBe(false);
+  });
+
+  it("returns true when WEBHOOK_DEV_MODE=true and no secret is configured", () => {
+    process.env.GITHUB_WEBHOOK_SECRET = undefined;
+    process.env.WEBHOOK_DEV_MODE = "true";
+    try {
+      expect(verifySignature("anything", null)).toBe(true);
+      expect(verifySignature("anything", "wrong-sig")).toBe(true);
+    } finally {
+      delete process.env.WEBHOOK_DEV_MODE;
+    }
   });
 });
 
