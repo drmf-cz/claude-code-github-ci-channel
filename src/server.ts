@@ -3,14 +3,15 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { CINotification, GitHubWebhookPayload } from "./types.js";
 
-// ── Configuration ────────────────────────────────────────────────────────────
+// ── Configuration ─────────────────────────────────────────────────────────────
 const PORT = Number.parseInt(process.env.WEBHOOK_PORT ?? "9443", 10);
 const MAX_LOG_CHARS = 8000;
+const MAIN_BRANCHES = new Set(["main", "master"]);
 
-// ── Logging (stderr only — stdout is reserved for MCP JSON-RPC) ──────────────
+// ── Logging ───────────────────────────────────────────────────────────────────
 const log = (...args: unknown[]) => console.error("[github-ci]", ...args);
 
-// ── HMAC-SHA256 Verification ─────────────────────────────────────────────────
+// ── HMAC-SHA256 Verification ──────────────────────────────────────────────────
 export function verifySignature(payload: string, signature: string | null): boolean {
   const secret = process.env.GITHUB_WEBHOOK_SECRET ?? "";
   if (!secret) {
@@ -28,7 +29,7 @@ export function verifySignature(payload: string, signature: string | null): bool
   }
 }
 
-// ── Event Parsing ────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 const STATUS_EMOJI: Record<string, string> = {
   success: "✅",
   failure: "❌",
@@ -47,6 +48,7 @@ function formatDuration(startedAt: string | null, updatedAt: string | null): str
   return `${Math.round(ms / 1000)}s`;
 }
 
+// ── Event Parsing ─────────────────────────────────────────────────────────────
 export function parseWorkflowEvent(
   event: string,
   payload: GitHubWebhookPayload,
@@ -61,6 +63,7 @@ export function parseWorkflowEvent(
     const emoji = statusEmoji(run.conclusion);
     const commitMsg = run.head_commit?.message?.split("\n")[0] ?? "";
     const duration = formatDuration(run.run_started_at, run.updated_at);
+    const isMainBranch = MAIN_BRANCHES.has(run.head_branch);
 
     const lines = [
       `${emoji} CI ${status.toUpperCase()}: ${run.name} on ${repo}`,
@@ -70,10 +73,22 @@ export function parseWorkflowEvent(
     ];
 
     if (status === "failure") {
-      lines.push(
-        "",
-        "This build failed. Use the fetch_workflow_logs tool with the URL above to retrieve full logs and diagnose the issue.",
-      );
+      lines.push("", "Fetch logs and diagnose:", `  fetch_workflow_logs("${run.html_url}")`);
+
+      if (isMainBranch) {
+        lines.push(
+          "",
+          "🚨 Main branch is broken. Spawn a subagent to:",
+          "  1. Read the logs above",
+          "  2. Find the failing step and root cause",
+          "  3. Apply a fix and push to restore main",
+        );
+      } else {
+        lines.push(
+          "",
+          "Spawn a subagent to investigate, then fix the failing step and push an update.",
+        );
+      }
     }
 
     return {
@@ -87,6 +102,7 @@ export function parseWorkflowEvent(
         status,
         workflow: run.name,
         run_url: run.html_url,
+        run_id: String(run.id ?? ""),
         sender: payload.sender?.login ?? "",
       },
     };
@@ -138,22 +154,100 @@ export function parseWorkflowEvent(
     };
   }
 
-  // Fallback
+  // Fallback for unknown events
   return {
     summary: `GitHub event "${event}": ${JSON.stringify(payload).slice(0, MAX_LOG_CHARS)}`,
     meta: { source: "github-ci", event, action: payload.action ?? "" },
   };
 }
 
-// ── Actionable Event Filter ──────────────────────────────────────────────────
+export function parsePullRequestEvent(payload: GitHubWebhookPayload): CINotification | null {
+  const pr = payload.pull_request;
+  if (!pr) return null;
+
+  const repo = payload.repository?.full_name ?? "unknown";
+  const state = pr.mergeable_state;
+
+  if (state === "dirty") {
+    return {
+      summary: [
+        `⚠️ MERGE CONFLICT — PR #${pr.number}: "${pr.title}"`,
+        `Repo: ${repo} | Branch: ${pr.head.ref} → ${pr.base.ref}`,
+        `URL: ${pr.html_url}`,
+        "",
+        `This PR has conflicts with ${pr.base.ref}.`,
+        "Spawn a subagent to resolve them:",
+        `  git checkout ${pr.head.ref}`,
+        `  git rebase origin/${pr.base.ref}`,
+        "  # resolve conflicts, then:",
+        "  git push --force-with-lease",
+      ].join("\n"),
+      meta: {
+        source: "github-ci",
+        event: "pull_request",
+        action: payload.action ?? "",
+        repo,
+        pr_number: String(pr.number),
+        pr_title: pr.title,
+        head_branch: pr.head.ref,
+        base_branch: pr.base.ref,
+        pr_url: pr.html_url,
+        mergeable_state: state,
+        sender: payload.sender?.login ?? "",
+      },
+    };
+  }
+
+  if (state === "behind") {
+    return {
+      summary: [
+        `⬇️ BRANCH BEHIND BASE — PR #${pr.number}: "${pr.title}"`,
+        `Repo: ${repo} | Branch: ${pr.head.ref} → ${pr.base.ref}`,
+        `URL: ${pr.html_url}`,
+        "",
+        `${pr.head.ref} is behind ${pr.base.ref} (no conflicts, just needs a rebase).`,
+        "Spawn a subagent to update it:",
+        `  git checkout ${pr.head.ref}`,
+        `  git rebase origin/${pr.base.ref}`,
+        "  git push --force-with-lease",
+      ].join("\n"),
+      meta: {
+        source: "github-ci",
+        event: "pull_request",
+        action: payload.action ?? "",
+        repo,
+        pr_number: String(pr.number),
+        pr_title: pr.title,
+        head_branch: pr.head.ref,
+        base_branch: pr.base.ref,
+        pr_url: pr.html_url,
+        mergeable_state: state,
+        sender: payload.sender?.login ?? "",
+      },
+    };
+  }
+
+  return null;
+}
+
+// ── Actionable Event Filter ───────────────────────────────────────────────────
 export function isActionable(event: string, payload: GitHubWebhookPayload): boolean {
-  if (event === "ping") return false; // handled separately
+  if (event === "ping") return false;
+
+  if (event === "pull_request") {
+    const state = payload.pull_request?.mergeable_state;
+    // Only act when GitHub has finished computing mergeability
+    return (
+      ["opened", "synchronize", "reopened"].includes(payload.action ?? "") &&
+      (state === "dirty" || state === "behind")
+    );
+  }
 
   const completedEvents = ["workflow_run", "workflow_job", "check_suite", "check_run"];
   return completedEvents.includes(event) && payload.action === "completed";
 }
 
-// ── MCP Server ───────────────────────────────────────────────────────────────
+// ── MCP Server ────────────────────────────────────────────────────────────────
 export function createMcpServer(): McpServer {
   const mcp = new McpServer(
     { name: "github-ci-channel", version: "1.0.0" },
@@ -222,7 +316,7 @@ export function createMcpServer(): McpServer {
   return mcp;
 }
 
-// ── HTTP Webhook Server ──────────────────────────────────────────────────────
+// ── HTTP Webhook Server ───────────────────────────────────────────────────────
 export function startWebhookServer(mcp: McpServer): ReturnType<typeof Bun.serve> {
   return Bun.serve({
     port: PORT,
@@ -267,7 +361,11 @@ export function startWebhookServer(mcp: McpServer): ReturnType<typeof Bun.serve>
         return new Response("Skipped", { status: 200 });
       }
 
-      const notification = parseWorkflowEvent(event, payload);
+      const notification =
+        event === "pull_request"
+          ? parsePullRequestEvent(payload)
+          : parseWorkflowEvent(event, payload);
+
       if (!notification) {
         return new Response("Unparseable", { status: 200 });
       }
@@ -276,11 +374,14 @@ export function startWebhookServer(mcp: McpServer): ReturnType<typeof Bun.serve>
         await mcp.server.notification({
           method: "notifications/claude/channel",
           params: {
+            channel: "github-ci",
             content: notification.summary,
             meta: notification.meta,
           },
         });
-        log(`Pushed to Claude: ${notification.meta.status} on ${notification.meta.repo}`);
+        log(
+          `Pushed to Claude: ${notification.meta.status ?? notification.meta.mergeable_state} on ${notification.meta.repo}`,
+        );
       } catch (err) {
         log("Failed to send notification:", err);
         return new Response("Notification failed", { status: 500 });

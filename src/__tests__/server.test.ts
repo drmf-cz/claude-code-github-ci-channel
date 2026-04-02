@@ -214,3 +214,150 @@ describe("parseWorkflowEvent", () => {
     });
   });
 });
+
+// ── parsePullRequestEvent ─────────────────────────────────────────────────────
+import { parsePullRequestEvent } from "../server.js";
+import type { PullRequest } from "../types.js";
+
+const basePR: PullRequest = {
+  number: 42,
+  title: "feat: add new widget",
+  state: "open",
+  html_url: "https://github.com/acme/myrepo/pull/42",
+  head: { ref: "feature/widget", sha: "abc123" },
+  base: { ref: "main", sha: "def456" },
+  mergeable: false,
+  mergeable_state: "dirty",
+  user: { login: "octocat" },
+};
+
+const prPayload: GitHubWebhookPayload = {
+  action: "synchronize",
+  number: 42,
+  repository: { full_name: "acme/myrepo" },
+  sender: { login: "octocat" },
+  pull_request: basePR,
+};
+
+describe("parsePullRequestEvent", () => {
+  it("returns conflict notification for dirty PR", () => {
+    const result = parsePullRequestEvent(prPayload);
+    expect(result).not.toBeNull();
+    expect(result?.summary).toContain("MERGE CONFLICT");
+    expect(result?.summary).toContain("PR #42");
+    expect(result?.summary).toContain("feat: add new widget");
+    expect(result?.summary).toContain("feature/widget");
+    expect(result?.summary).toContain("rebase");
+    expect(result?.meta.mergeable_state).toBe("dirty");
+    expect(result?.meta.pr_number).toBe("42");
+  });
+
+  it("returns rebase notification for behind PR", () => {
+    const payload: GitHubWebhookPayload = {
+      ...prPayload,
+      pull_request: { ...basePR, mergeable_state: "behind", mergeable: null },
+    };
+    const result = parsePullRequestEvent(payload);
+    expect(result).not.toBeNull();
+    expect(result?.summary).toContain("BRANCH BEHIND BASE");
+    expect(result?.summary).toContain("rebase");
+    expect(result?.meta.mergeable_state).toBe("behind");
+  });
+
+  it("returns null for clean PR", () => {
+    const payload: GitHubWebhookPayload = {
+      ...prPayload,
+      pull_request: { ...basePR, mergeable_state: "clean", mergeable: true },
+    };
+    expect(parsePullRequestEvent(payload)).toBeNull();
+  });
+
+  it("returns null when pull_request is missing", () => {
+    expect(parsePullRequestEvent({ action: "synchronize" })).toBeNull();
+  });
+});
+
+// ── isActionable — pull_request ───────────────────────────────────────────────
+describe("isActionable — pull_request events", () => {
+  it("returns true for synchronize with dirty state", () => {
+    expect(isActionable("pull_request", prPayload)).toBe(true);
+  });
+
+  it("returns true for opened with behind state", () => {
+    const payload: GitHubWebhookPayload = {
+      ...prPayload,
+      action: "opened",
+      pull_request: { ...basePR, mergeable_state: "behind" },
+    };
+    expect(isActionable("pull_request", payload)).toBe(true);
+  });
+
+  it("returns false for clean PR", () => {
+    const payload: GitHubWebhookPayload = {
+      ...prPayload,
+      pull_request: { ...basePR, mergeable_state: "clean", mergeable: true },
+    };
+    expect(isActionable("pull_request", payload)).toBe(false);
+  });
+
+  it("returns false for closed action", () => {
+    const payload: GitHubWebhookPayload = {
+      ...prPayload,
+      action: "closed",
+    };
+    expect(isActionable("pull_request", payload)).toBe(false);
+  });
+
+  it("returns false for unknown mergeable_state (still computing)", () => {
+    const payload: GitHubWebhookPayload = {
+      ...prPayload,
+      pull_request: { ...basePR, mergeable_state: "unknown", mergeable: null },
+    };
+    expect(isActionable("pull_request", payload)).toBe(false);
+  });
+});
+
+// ── parseWorkflowEvent — main branch failure ──────────────────────────────────
+describe("parseWorkflowEvent — main branch escalation", () => {
+  it("includes subagent spawn instruction for failures on main", () => {
+    const payload: GitHubWebhookPayload = {
+      action: "completed",
+      repository: { full_name: "acme/myrepo" },
+      sender: { login: "octocat" },
+      workflow_run: {
+        name: "CI",
+        conclusion: "failure",
+        status: "completed",
+        head_branch: "main",
+        run_number: 10,
+        html_url: "https://github.com/acme/myrepo/actions/runs/10",
+        run_started_at: null,
+        updated_at: null,
+      },
+    };
+    const result = parseWorkflowEvent("workflow_run", payload);
+    expect(result?.summary).toContain("Main branch is broken");
+    expect(result?.summary).toContain("Spawn a subagent");
+  });
+
+  it("does not escalate for failures on feature branches", () => {
+    const payload: GitHubWebhookPayload = {
+      action: "completed",
+      repository: { full_name: "acme/myrepo" },
+      sender: { login: "octocat" },
+      workflow_run: {
+        name: "CI",
+        conclusion: "failure",
+        status: "completed",
+        head_branch: "feature/cool",
+        run_number: 11,
+        html_url: "https://github.com/acme/myrepo/actions/runs/11",
+        run_started_at: null,
+        updated_at: null,
+      },
+    };
+    const result = parseWorkflowEvent("workflow_run", payload);
+    expect(result?.summary).not.toContain("Main branch is broken");
+    expect(result?.summary).toContain("Spawn a subagent");
+  });
+});
