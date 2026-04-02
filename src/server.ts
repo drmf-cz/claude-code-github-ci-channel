@@ -55,18 +55,29 @@ export function sanitizeBody(body: string, maxLen = 500): string {
     .slice(0, maxLen);
 }
 
+/** Fetch with a hard timeout. Aborts and rejects if the request exceeds `ms` milliseconds. */
+async function fetchWithTimeout(url: string, init: RequestInit, ms = 15_000): Promise<Response> {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: ac.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Maximum review events buffered per PR window (memory / prompt-size guard). */
 const MAX_EVENTS_PER_WINDOW = 50;
 
 // ── PR Review Debounce ────────────────────────────────────────────────────────
-const REVIEW_DEBOUNCE_MS = Number.parseInt(process.env.REVIEW_DEBOUNCE_MS ?? "30000", 10);
+const REVIEW_DEBOUNCE_MS = Number.parseInt(process.env.REVIEW_DEBOUNCE_MS ?? "30000", 10) || 30_000;
 const REVIEW_COOLDOWN_MS = 5 * 60 * 1000; // 5 min — discard events after a notification fires
 
 export interface ReviewEventRecord {
   type: "review" | "review_comment" | "issue_comment" | "unresolved_thread";
   reviewer: string;
-  /** Uppercase review state, e.g. CHANGES_REQUESTED */
-  state?: string;
+  /** Review state from PRReview — undefined for comment/thread events. */
+  state?: PRReview["state"];
   body: string;
   url: string;
   /** File path for line-level comments */
@@ -165,7 +176,7 @@ export function buildReviewNotification(
     const stateLabel = reviewRecord?.state ? ` [${reviewRecord.state}]` : "";
     lines.push(`@${reviewer}${stateLabel}:`);
     for (const ev of revEvents) {
-      const snippet = ev.body.replace(/\n/g, " ").slice(0, 120);
+      const snippet = ev.body.slice(0, 120);
       const location = ev.path ? ` (${ev.path})` : "";
       const prefix = ev.type === "unresolved_thread" ? "🔄 re-opened" : "•";
       lines.push(`  ${prefix} "${snippet}"${location}`);
@@ -444,7 +455,7 @@ async function fetchPRMergeableState(
   prNumber: number,
   token: string,
 ): Promise<MergeableState> {
-  const resp = await fetch(`https://api.github.com/repos/${repo}/pulls/${prNumber}`, {
+  const resp = await fetchWithTimeout(`https://api.github.com/repos/${repo}/pulls/${prNumber}`, {
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: "application/vnd.github+json",
@@ -473,7 +484,7 @@ export async function checkPRsAfterPush(
   // Give GitHub a moment to start computing mergeability
   await new Promise<void>((r) => setTimeout(r, 4_000));
 
-  const resp = await fetch(
+  const resp = await fetchWithTimeout(
     `https://api.github.com/repos/${repo}/pulls?state=open&base=${baseBranch}&per_page=20`,
     {
       headers: {
@@ -482,6 +493,7 @@ export async function checkPRsAfterPush(
         "X-GitHub-Api-Version": "2022-11-28",
       },
     },
+    15_000,
   );
 
   if (!resp.ok) {
@@ -598,7 +610,7 @@ export function createMcpServer(): McpServer {
 
       const [, owner, repo, runId] = match;
       try {
-        const resp = await fetch(
+        const resp = await fetchWithTimeout(
           `https://api.github.com/repos/${owner}/${repo}/actions/runs/${runId}/logs`,
           {
             headers: {
@@ -607,6 +619,7 @@ export function createMcpServer(): McpServer {
             },
             redirect: "follow",
           },
+          60_000,
         );
 
         if (!resp.ok) {
@@ -687,7 +700,7 @@ export function startWebhookServer(mcp: McpServer): ReturnType<typeof Bun.serve>
       log(`Received: ${event} (${payload.action ?? "no action"}) delivery=${deliveryId}`);
 
       if (event === "push") {
-        const push = JSON.parse(body) as GitHubPushPayload;
+        const push = payload as unknown as GitHubPushPayload;
         const branch = push.ref.replace("refs/heads/", "");
         const token = process.env.GITHUB_TOKEN;
         if (MAIN_BRANCHES.has(branch) && token) {

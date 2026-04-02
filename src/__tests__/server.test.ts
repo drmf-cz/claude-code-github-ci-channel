@@ -392,7 +392,7 @@ describe("buildReviewNotification", () => {
       {
         type: "review" as const,
         reviewer: "alice",
-        state: "CHANGES_REQUESTED",
+        state: "CHANGES_REQUESTED" as const,
         body: "Please add tests.",
         url: "https://github.com/acme/repo/pull/42#pullrequestreview-1",
       },
@@ -407,7 +407,7 @@ describe("buildReviewNotification", () => {
       {
         type: "review" as const,
         reviewer: "alice",
-        state: "CHANGES_REQUESTED",
+        state: "CHANGES_REQUESTED" as const,
         body: "Needs error handling.",
         url: "https://github.com/acme/repo/pull/42#r1",
       },
@@ -473,7 +473,7 @@ describe("buildReviewNotification", () => {
       {
         type: "review" as const,
         reviewer: "alice",
-        state: "APPROVED",
+        state: "APPROVED" as const,
         body: "Ship it!",
         url: "https://github.com/acme/repo/pull/42#r4",
       },
@@ -508,7 +508,7 @@ describe("scheduleReviewNotification — debounce", () => {
   const event = {
     type: "review" as const,
     reviewer: "alice",
-    state: "COMMENTED",
+    state: "COMMENTED" as const,
     body: "nit",
     url: "https://github.com/acme/repo/pull/1#r1",
   };
