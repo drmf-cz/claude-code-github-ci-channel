@@ -21,7 +21,7 @@ const REVIEW_DEBOUNCE_MS = Number.parseInt(process.env.REVIEW_DEBOUNCE_MS ?? "30
 const REVIEW_COOLDOWN_MS = 5 * 60 * 1000; // 5 min — discard events after a notification fires
 
 export interface ReviewEventRecord {
-  type: "review" | "review_comment" | "issue_comment";
+  type: "review" | "review_comment" | "issue_comment" | "unresolved_thread";
   reviewer: string;
   /** Uppercase review state, e.g. CHANGES_REQUESTED */
   state?: string;
@@ -124,7 +124,8 @@ export function buildReviewNotification(
     for (const ev of revEvents) {
       const snippet = ev.body.replace(/\n/g, " ").slice(0, 120);
       const location = ev.path ? ` (${ev.path})` : "";
-      lines.push(`  • "${snippet}"${location}`);
+      const prefix = ev.type === "unresolved_thread" ? "🔄 re-opened" : "•";
+      lines.push(`  ${prefix} "${snippet}"${location}`);
       lines.push(`    → ${ev.url}`);
     }
   }
@@ -646,6 +647,7 @@ export function startWebhookServer(mcp: McpServer): ReturnType<typeof Bun.serve>
       if (
         event === "pull_request_review" ||
         event === "pull_request_review_comment" ||
+        event === "pull_request_review_thread" ||
         event === "issue_comment"
       ) {
         let reviewEvent: ReviewEventRecord | null = null;
@@ -696,6 +698,21 @@ export function startWebhookServer(mcp: McpServer): ReturnType<typeof Bun.serve>
               prUrl: issue.html_url,
               repo,
             };
+          }
+        } else if (event === "pull_request_review_thread" && payload.action === "unresolved") {
+          const thread = payload.thread;
+          const pr = payload.pull_request;
+          // Use the thread's first comment as the representative entry
+          const firstComment = thread?.comments[0];
+          if (thread && pr && firstComment) {
+            reviewEvent = {
+              type: "unresolved_thread",
+              reviewer: payload.sender?.login ?? firstComment.user.login,
+              body: firstComment.body,
+              url: firstComment.html_url,
+              path: firstComment.path,
+            };
+            prMeta = { prNumber: pr.number, prTitle: pr.title, prUrl: pr.html_url, repo };
           }
         }
 

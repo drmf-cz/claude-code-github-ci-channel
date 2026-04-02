@@ -20,6 +20,7 @@ The plugin runs inside your Claude Code session and listens for GitHub events. W
 | `pull_request` opened/synced | `mergeable_state: behind` | Spawns subagent to rebase cleanly |
 | `pull_request_review` submitted | any non-draft state | Debounced 30 s, then enters plan mode + `pr-comment-response` skill |
 | `pull_request_review_comment` created | — | Accumulated in same debounce window |
+| `pull_request_review_thread` unresolved | thread re-opened | Accumulated in same debounce window, shown as 🔄 |
 | `issue_comment` created | PR comment (not issue) | Accumulated in same debounce window |
 
 > **Why `push` events for PRs?** GitHub does not fire a `pull_request` event when the base branch advances and makes a PR go `behind`. The only way to detect this is to listen to `push` on main and then query the API for open PRs.
@@ -101,6 +102,7 @@ For a stable URL: [Cloudflare named tunnels](https://developers.cloudflare.com/c
    - ✅ Pull requests
    - ✅ Pull request reviews
    - ✅ Pull request review comments
+   - ✅ Pull request review threads
    - ✅ Issue comments
    - ✅ Pushes
 6. Click **Add webhook** — GitHub sends a ping; you should see a green ✓

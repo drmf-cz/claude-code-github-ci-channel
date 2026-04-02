@@ -450,6 +450,21 @@ describe("buildReviewNotification", () => {
     expect(result.summary).toContain("pr-comment-response");
   });
 
+  it("marks unresolved_thread events with re-opened prefix", () => {
+    const events = [
+      {
+        type: "unresolved_thread" as const,
+        reviewer: "alice",
+        body: "This still needs fixing.",
+        url: "https://github.com/acme/repo/pull/42#discussion_r1",
+        path: "src/server.ts",
+      },
+    ];
+    const result = buildReviewNotification(events, meta);
+    expect(result.summary).toContain("🔄 re-opened");
+    expect(result.summary).toContain("src/server.ts");
+  });
+
   it("sets correct meta fields", () => {
     const events = [
       {
@@ -506,6 +521,19 @@ describe("scheduleReviewNotification — debounce", () => {
     const event2 = { ...event, reviewer: "bob", url: "https://github.com/acme/repo/pull/1#r2" };
     scheduleReviewNotification("acme/repo/1", meta, event2, () => {});
     expect(pendingReviews.get("acme/repo/1")?.events).toHaveLength(2);
+  });
+
+  it("accepts unresolved_thread events into the debounce queue", () => {
+    const unresolvedEvent = {
+      type: "unresolved_thread" as const,
+      reviewer: "alice",
+      body: "Still not addressed.",
+      url: "https://github.com/acme/repo/pull/1#discussion_r1",
+      path: "src/index.ts",
+    };
+    scheduleReviewNotification("acme/repo/1", meta, unresolvedEvent, () => {});
+    const entry = pendingReviews.get("acme/repo/1");
+    expect(entry?.events[0].type).toBe("unresolved_thread");
   });
 
   it("returns false and discards when key is in cooldown", () => {

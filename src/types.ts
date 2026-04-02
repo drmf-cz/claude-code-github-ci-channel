@@ -103,6 +103,18 @@ export interface GitHubIssue {
   pull_request?: { url: string };
 }
 
+export interface PRReviewThread {
+  /** Ordered oldest-first. Always has at least one entry. */
+  comments: Array<{
+    id: number;
+    user: { login: string };
+    body: string;
+    html_url: string;
+    path: string;
+    line: number | null;
+  }>;
+}
+
 export interface GitHubWebhookPayload {
   action?: string;
   number?: number;
@@ -116,6 +128,7 @@ export interface GitHubWebhookPayload {
   review?: PRReview;
   comment?: PRReviewComment | IssueComment;
   issue?: GitHubIssue;
+  thread?: PRReviewThread;
 }
 
 export interface GitHubPushPayload {
