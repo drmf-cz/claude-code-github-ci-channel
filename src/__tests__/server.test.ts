@@ -1,5 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { isActionable, parseWorkflowEvent, verifySignature } from "../server.js";
+import {
+  buildReviewNotification,
+  isActionable,
+  isInReviewCooldown,
+  parseWorkflowEvent,
+  pendingReviews,
+  reviewCooldowns,
+  scheduleReviewNotification,
+  verifySignature,
+} from "../server.js";
 import type { GitHubWebhookPayload } from "../types.js";
 
 // ── verifySignature ──────────────────────────────────────────────────────────
@@ -363,5 +372,167 @@ describe("parseWorkflowEvent — main branch escalation", () => {
     const result = parseWorkflowEvent("workflow_run", payload);
     expect(result?.summary).not.toContain("Main branch is broken");
     expect(result?.summary).toContain("Agent tool NOW");
+  });
+});
+
+// ── buildReviewNotification ───────────────────────────────────────────────────
+describe("buildReviewNotification", () => {
+  const meta = {
+    prNumber: 42,
+    prTitle: "feat: add rate limiting",
+    prUrl: "https://github.com/acme/repo/pull/42",
+    repo: "acme/repo",
+  };
+
+  it("includes PR number and title in summary", () => {
+    const events = [
+      {
+        type: "review" as const,
+        reviewer: "alice",
+        state: "CHANGES_REQUESTED",
+        body: "Please add tests.",
+        url: "https://github.com/acme/repo/pull/42#pullrequestreview-1",
+      },
+    ];
+    const result = buildReviewNotification(events, meta);
+    expect(result.summary).toContain("PR #42");
+    expect(result.summary).toContain("feat: add rate limiting");
+  });
+
+  it("groups events by reviewer", () => {
+    const events = [
+      {
+        type: "review" as const,
+        reviewer: "alice",
+        state: "CHANGES_REQUESTED",
+        body: "Needs error handling.",
+        url: "https://github.com/acme/repo/pull/42#r1",
+      },
+      {
+        type: "review_comment" as const,
+        reviewer: "bob",
+        body: "Consider a Map here.",
+        url: "https://github.com/acme/repo/pull/42#r2",
+        path: "src/server.ts",
+      },
+    ];
+    const result = buildReviewNotification(events, meta);
+    expect(result.summary).toContain("@alice");
+    expect(result.summary).toContain("@bob");
+    expect(result.summary).toContain("CHANGES_REQUESTED");
+  });
+
+  it("includes file path for line-level comments", () => {
+    const events = [
+      {
+        type: "review_comment" as const,
+        reviewer: "carol",
+        body: "Missing null check.",
+        url: "https://github.com/acme/repo/pull/42#r3",
+        path: "src/index.ts",
+      },
+    ];
+    const result = buildReviewNotification(events, meta);
+    expect(result.summary).toContain("src/index.ts");
+  });
+
+  it("includes plan mode and skill instruction", () => {
+    const events = [
+      {
+        type: "issue_comment" as const,
+        reviewer: "dave",
+        body: "LGTM overall.",
+        url: "https://github.com/acme/repo/pull/42#issuecomment-1",
+      },
+    ];
+    const result = buildReviewNotification(events, meta);
+    expect(result.summary).toContain("plan mode");
+    expect(result.summary).toContain("pr-comment-response");
+  });
+
+  it("sets correct meta fields", () => {
+    const events = [
+      {
+        type: "review" as const,
+        reviewer: "alice",
+        state: "APPROVED",
+        body: "Ship it!",
+        url: "https://github.com/acme/repo/pull/42#r4",
+      },
+    ];
+    const result = buildReviewNotification(events, meta);
+    expect(result.meta.event).toBe("pr_review");
+    expect(result.meta.pr_number).toBe("42");
+    expect(result.meta.event_count).toBe("1");
+  });
+});
+
+// ── scheduleReviewNotification / debounce ─────────────────────────────────────
+describe("scheduleReviewNotification — debounce", () => {
+  beforeEach(() => {
+    pendingReviews.clear();
+    reviewCooldowns.clear();
+  });
+
+  afterEach(() => {
+    // Clean up any lingering timers
+    for (const entry of pendingReviews.values()) clearTimeout(entry.timer);
+    pendingReviews.clear();
+    reviewCooldowns.clear();
+  });
+
+  const meta = {
+    prNumber: 1,
+    prTitle: "test PR",
+    prUrl: "https://github.com/acme/repo/pull/1",
+    repo: "acme/repo",
+  };
+  const event = {
+    type: "review" as const,
+    reviewer: "alice",
+    state: "COMMENTED",
+    body: "nit",
+    url: "https://github.com/acme/repo/pull/1#r1",
+  };
+
+  it("returns true and adds to pending map", () => {
+    const accepted = scheduleReviewNotification("acme/repo/1", meta, event, () => {});
+    expect(accepted).toBe(true);
+    expect(pendingReviews.has("acme/repo/1")).toBe(true);
+  });
+
+  it("accumulates multiple events under the same key", () => {
+    scheduleReviewNotification("acme/repo/1", meta, event, () => {});
+    const event2 = { ...event, reviewer: "bob", url: "https://github.com/acme/repo/pull/1#r2" };
+    scheduleReviewNotification("acme/repo/1", meta, event2, () => {});
+    expect(pendingReviews.get("acme/repo/1")?.events).toHaveLength(2);
+  });
+
+  it("returns false and discards when key is in cooldown", () => {
+    reviewCooldowns.set("acme/repo/1", Date.now() + 60_000);
+    const accepted = scheduleReviewNotification("acme/repo/1", meta, event, () => {});
+    expect(accepted).toBe(false);
+    expect(pendingReviews.has("acme/repo/1")).toBe(false);
+  });
+});
+
+// ── isInReviewCooldown ────────────────────────────────────────────────────────
+describe("isInReviewCooldown", () => {
+  beforeEach(() => reviewCooldowns.clear());
+  afterEach(() => reviewCooldowns.clear());
+
+  it("returns false when no cooldown is set", () => {
+    expect(isInReviewCooldown("x/y/1")).toBe(false);
+  });
+
+  it("returns true when cooldown has not expired", () => {
+    reviewCooldowns.set("x/y/1", Date.now() + 60_000);
+    expect(isInReviewCooldown("x/y/1")).toBe(true);
+  });
+
+  it("returns false and cleans up when cooldown has expired", () => {
+    reviewCooldowns.set("x/y/1", Date.now() - 1);
+    expect(isInReviewCooldown("x/y/1")).toBe(false);
+    expect(reviewCooldowns.has("x/y/1")).toBe(false);
   });
 });

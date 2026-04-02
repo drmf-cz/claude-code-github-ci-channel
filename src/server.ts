@@ -5,13 +5,155 @@ import type {
   CINotification,
   GitHubPushPayload,
   GitHubWebhookPayload,
+  IssueComment,
   MergeableState,
+  PRReview,
+  PRReviewComment,
 } from "./types.js";
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 const PORT = Number.parseInt(process.env.WEBHOOK_PORT ?? "9443", 10);
 const MAX_LOG_CHARS = 8000;
 const MAIN_BRANCHES = new Set(["main", "master"]);
+
+// ── PR Review Debounce ────────────────────────────────────────────────────────
+const REVIEW_DEBOUNCE_MS = Number.parseInt(process.env.REVIEW_DEBOUNCE_MS ?? "30000", 10);
+const REVIEW_COOLDOWN_MS = 5 * 60 * 1000; // 5 min — discard events after a notification fires
+
+export interface ReviewEventRecord {
+  type: "review" | "review_comment" | "issue_comment";
+  reviewer: string;
+  /** Uppercase review state, e.g. CHANGES_REQUESTED */
+  state?: string;
+  body: string;
+  url: string;
+  /** File path for line-level comments */
+  path?: string;
+}
+
+interface PendingPRReview {
+  timer: ReturnType<typeof setTimeout>;
+  events: ReviewEventRecord[];
+  prNumber: number;
+  prTitle: string;
+  prUrl: string;
+  repo: string;
+}
+
+// Exported for testing
+export const pendingReviews = new Map<string, PendingPRReview>();
+export const reviewCooldowns = new Map<string, number>(); // key → expiry timestamp (ms)
+
+export function isInReviewCooldown(key: string): boolean {
+  const expiry = reviewCooldowns.get(key);
+  if (expiry === undefined) return false;
+  if (Date.now() > expiry) {
+    reviewCooldowns.delete(key);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Accumulate review events within a debounce window. Returns false if the key
+ * is in cooldown (event discarded), true otherwise.
+ *
+ * When the timer fires, `onFire` is called with all accumulated events, then
+ * a 5-minute cooldown is set for the key so subsequent bursts are dropped.
+ */
+export function scheduleReviewNotification(
+  key: string,
+  prMeta: { prNumber: number; prTitle: string; prUrl: string; repo: string },
+  event: ReviewEventRecord,
+  onFire: (
+    events: ReviewEventRecord[],
+    meta: { prNumber: number; prTitle: string; prUrl: string; repo: string },
+  ) => void,
+): boolean {
+  if (isInReviewCooldown(key)) return false;
+
+  const existing = pendingReviews.get(key);
+  if (existing) {
+    clearTimeout(existing.timer);
+    existing.events.push(event);
+    existing.timer = setTimeout(() => {
+      const entry = pendingReviews.get(key);
+      pendingReviews.delete(key);
+      reviewCooldowns.set(key, Date.now() + REVIEW_COOLDOWN_MS);
+      if (entry) onFire(entry.events, prMeta);
+    }, REVIEW_DEBOUNCE_MS);
+  } else {
+    const entry: PendingPRReview = {
+      ...prMeta,
+      events: [event],
+      timer: setTimeout(() => {
+        pendingReviews.delete(key);
+        reviewCooldowns.set(key, Date.now() + REVIEW_COOLDOWN_MS);
+        onFire(entry.events, prMeta);
+      }, REVIEW_DEBOUNCE_MS),
+    };
+    pendingReviews.set(key, entry);
+  }
+  return true;
+}
+
+export function buildReviewNotification(
+  events: ReviewEventRecord[],
+  meta: { prNumber: number; prTitle: string; prUrl: string; repo: string },
+): CINotification {
+  // Group by reviewer preserving insertion order
+  const byReviewer = new Map<string, ReviewEventRecord[]>();
+  for (const ev of events) {
+    const list = byReviewer.get(ev.reviewer) ?? [];
+    list.push(ev);
+    byReviewer.set(ev.reviewer, list);
+  }
+
+  const lines: string[] = [
+    `📝 PR REVIEW — PR #${meta.prNumber}: "${meta.prTitle}"`,
+    `Repo: ${meta.repo} | URL: ${meta.prUrl}`,
+    "",
+    `${events.length} review event(s) received — consolidated notification:`,
+    "",
+  ];
+
+  for (const [reviewer, revEvents] of byReviewer) {
+    const reviewRecord = revEvents.find((e) => e.type === "review");
+    const stateLabel = reviewRecord?.state ? ` [${reviewRecord.state}]` : "";
+    lines.push(`@${reviewer}${stateLabel}:`);
+    for (const ev of revEvents) {
+      const snippet = ev.body.replace(/\n/g, " ").slice(0, 120);
+      const location = ev.path ? ` (${ev.path})` : "";
+      lines.push(`  • "${snippet}"${location}`);
+      lines.push(`    → ${ev.url}`);
+    }
+  }
+
+  lines.push(
+    "",
+    "Act immediately — no confirmation needed.",
+    "Enter plan mode, then use the pr-comment-response skill to address each thread.",
+    "",
+    "Subagent instructions:",
+    `1. For each comment thread above, open the link and read full context`,
+    `2. Code comments: apply the fix in a worktree, commit`,
+    `3. Questions / style: reply inline with a concise explanation`,
+    `4. Use gh-pr-reply.sh --batch to post all replies in one shot`,
+  );
+
+  return {
+    summary: lines.join("\n"),
+    meta: {
+      source: "github-ci",
+      event: "pr_review",
+      repo: meta.repo,
+      pr_number: String(meta.prNumber),
+      pr_title: meta.prTitle,
+      pr_url: meta.prUrl,
+      event_count: String(events.length),
+    },
+  };
+}
 
 // ── Logging ───────────────────────────────────────────────────────────────────
 const log = (...args: unknown[]) => console.error("[github-ci]", ...args);
@@ -496,6 +638,87 @@ export function startWebhookServer(mcp: McpServer): ReturnType<typeof Bun.serve>
         if (MAIN_BRANCHES.has(branch) && token) {
           log(`Push to ${branch} — checking open PRs for merge status`);
           void checkPRsAfterPush(push.repository.full_name, branch, token, mcp);
+        }
+        return new Response("OK", { status: 200 });
+      }
+
+      // ── PR Review / Comment events (debounced) ──────────────────────────────
+      if (
+        event === "pull_request_review" ||
+        event === "pull_request_review_comment" ||
+        event === "issue_comment"
+      ) {
+        let reviewEvent: ReviewEventRecord | null = null;
+        let prMeta: { prNumber: number; prTitle: string; prUrl: string; repo: string } | null = null;
+        const repo = payload.repository?.full_name ?? "unknown";
+
+        if (event === "pull_request_review" && payload.action === "submitted") {
+          const review = payload.review as PRReview | undefined;
+          const pr = payload.pull_request;
+          if (review && pr && (review.state as string) !== "pending") {
+            reviewEvent = {
+              type: "review",
+              reviewer: review.user.login,
+              state: review.state,
+              body: review.body ?? "(no review body)",
+              url: review.html_url,
+            };
+            prMeta = { prNumber: pr.number, prTitle: pr.title, prUrl: pr.html_url, repo };
+          }
+        } else if (event === "pull_request_review_comment" && payload.action === "created") {
+          const comment = payload.comment as PRReviewComment | undefined;
+          const pr = payload.pull_request;
+          if (comment && pr) {
+            reviewEvent = {
+              type: "review_comment",
+              reviewer: comment.user.login,
+              body: comment.body,
+              url: comment.html_url,
+              path: comment.path,
+            };
+            prMeta = { prNumber: pr.number, prTitle: pr.title, prUrl: pr.html_url, repo };
+          }
+        } else if (event === "issue_comment" && payload.action === "created") {
+          const comment = payload.comment as IssueComment | undefined;
+          const issue = payload.issue;
+          // Only act on PR comments — issue_comment also fires on plain issues
+          if (comment && issue?.pull_request) {
+            reviewEvent = {
+              type: "issue_comment",
+              reviewer: comment.user.login,
+              body: comment.body,
+              url: comment.html_url,
+            };
+            prMeta = {
+              prNumber: issue.number,
+              prTitle: issue.title,
+              prUrl: issue.html_url,
+              repo,
+            };
+          }
+        }
+
+        if (reviewEvent && prMeta) {
+          const key = `${repo}/${prMeta.prNumber}`;
+          const accepted = scheduleReviewNotification(key, prMeta, reviewEvent, async (evts, meta) => {
+            const notification = buildReviewNotification(evts, meta);
+            try {
+              await mcp.server.notification({
+                method: "notifications/claude/channel",
+                params: {
+                  channel: "github-ci",
+                  content: notification.summary,
+                  meta: notification.meta,
+                },
+              });
+              log(`PR review notification sent for PR #${meta.prNumber} (${evts.length} event(s))`);
+            } catch (err) {
+              log(`Failed to send PR review notification for PR #${meta.prNumber}:`, err);
+            }
+          });
+          if (!accepted) log(`PR #${prMeta.prNumber} review event discarded (cooldown active)`);
+        } else {
+          log(`Skipping ${event}/${payload.action ?? ""} — not a PR review we act on`);
         }
         return new Response("OK", { status: 200 });
       }

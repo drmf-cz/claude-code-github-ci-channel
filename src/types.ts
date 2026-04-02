@@ -64,6 +64,46 @@ export interface PullRequest {
   user: { login: string };
 }
 
+
+export interface PRReview {
+  id: number;
+  user: { login: string };
+  /** GitHub uses uppercase: APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED */
+  state: "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED" | "DISMISSED";
+  body: string | null;
+  html_url: string;
+  submitted_at: string | null;
+}
+
+export interface PRReviewComment {
+  id: number;
+  user: { login: string };
+  body: string;
+  html_url: string;
+  /** File path the comment is anchored to */
+  path: string;
+  /** Null for outdated comments whose line no longer exists */
+  line: number | null;
+}
+
+export interface IssueComment {
+  id: number;
+  user: { login: string };
+  body: string;
+  html_url: string;
+}
+
+/**
+ * GitHub issue object as it appears in issue_comment payloads.
+ * The `pull_request` field is present only when the issue is a PR.
+ */
+export interface GitHubIssue {
+  number: number;
+  title: string;
+  html_url: string;
+  pull_request?: { url: string };
+}
+
 export interface GitHubWebhookPayload {
   action?: string;
   number?: number;
@@ -74,6 +114,9 @@ export interface GitHubWebhookPayload {
   check_suite?: CheckSuite;
   check_run?: CheckRun;
   pull_request?: PullRequest;
+  review?: PRReview;
+  comment?: PRReviewComment | IssueComment;
+  issue?: GitHubIssue;
 }
 
 export interface GitHubPushPayload {

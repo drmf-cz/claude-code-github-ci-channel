@@ -18,6 +18,9 @@ The plugin runs inside your Claude Code session and listens for GitHub events. W
 | `push` to main/master | open PRs exist | Checks each PR's merge status via API, notifies on `dirty` or `behind` |
 | `pull_request` opened/synced | `mergeable_state: dirty` | Spawns subagent to rebase and resolve conflicts |
 | `pull_request` opened/synced | `mergeable_state: behind` | Spawns subagent to rebase cleanly |
+| `pull_request_review` submitted | any non-draft state | Debounced 30 s, then enters plan mode + `pr-comment-response` skill |
+| `pull_request_review_comment` created | — | Accumulated in same debounce window |
+| `issue_comment` created | PR comment (not issue) | Accumulated in same debounce window |
 
 > **Why `push` events for PRs?** GitHub does not fire a `pull_request` event when the base branch advances and makes a PR go `behind`. The only way to detect this is to listen to `push` on main and then query the API for open PRs.
 
@@ -96,6 +99,9 @@ For a stable URL: [Cloudflare named tunnels](https://developers.cloudflare.com/c
    - ✅ Workflow jobs
    - ✅ Check suites
    - ✅ Pull requests
+   - ✅ Pull request reviews
+   - ✅ Pull request review comments
+   - ✅ Issue comments
    - ✅ Pushes
 6. Click **Add webhook** — GitHub sends a ping; you should see a green ✓
 
@@ -179,6 +185,7 @@ claude --dangerously-load-development-channels server:github-ci
 | `GITHUB_WEBHOOK_SECRET` | required | — | HMAC-SHA256 secret — must match GitHub webhook settings exactly |
 | `GITHUB_TOKEN` | required* | optional | PAT for log fetching and PR status checks |
 | `WATCH_REPOS` | — | required | Comma-separated `owner/repo` list |
+| `REVIEW_DEBOUNCE_MS` | optional | — | Debounce window for review events (default: `30000` ms) |
 
 \* Without `GITHUB_TOKEN`, `fetch_workflow_logs` and behind-PR detection silently no-op.
 
@@ -199,6 +206,7 @@ When the `github-ci` MCP channel sends a notification, you are pre-authorized to
 - **Merge conflicts**: Same worktree workflow; resolve conflicts during the interactive rebase.
 - **CI failure on main**: Spawn a subagent — call `fetch_workflow_logs`, diagnose the root cause, apply a fix, push to restore main.
 - **CI failure on feature branch**: Spawn a subagent — fetch logs, investigate, push a fix.
+- **PR review / comments**: Enter plan mode, then use the `pr-comment-response` skill to address each thread. Apply code fixes in a worktree, reply to comments with `gh-pr-reply.sh --batch`.
 
 The channel notification IS the permission. No additional confirmation needed for any of the above.
 ```
