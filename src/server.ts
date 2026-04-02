@@ -287,6 +287,8 @@ export async function checkPRsAfterPush(
     return;
   }
 
+  // Note: the list endpoint never populates mergeable_state — always null.
+  // We must fetch each PR individually to get the real value.
   const prs = (await resp.json()) as Array<{
     number: number;
     title: string;
@@ -294,13 +296,13 @@ export async function checkPRsAfterPush(
     head: { ref: string };
     base: { ref: string };
     user: { login: string };
-    mergeable_state: MergeableState;
   }>;
 
   for (const pr of prs) {
-    let state = pr.mergeable_state;
+    // Always fetch individual PR — list endpoint omits mergeable_state
+    let state = await fetchPRMergeableState(repo, pr.number, token);
 
-    // Retry once if GitHub hasn't finished computing yet
+    // Retry once if GitHub is still computing (common immediately after a push)
     if (state === "unknown") {
       await new Promise<void>((r) => setTimeout(r, 5_000));
       state = await fetchPRMergeableState(repo, pr.number, token);
