@@ -16,15 +16,68 @@ const PORT = Number.parseInt(process.env.WEBHOOK_PORT ?? "9443", 10);
 const MAX_LOG_CHARS = 8000;
 const MAIN_BRANCHES = new Set(["main", "master"]);
 
+// ── Security ──────────────────────────────────────────────────────────────────
+const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB — PR review payloads with diff context can exceed 100 KB
+/** Returns true if the raw body exceeds the allowed limit. */
+export function isOversized(body: string): boolean {
+  return Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES;
+}
+
+/** Bounded set of recently seen X-GitHub-Delivery IDs (replay protection). */
+const SEEN_DELIVERIES = new Set<string>();
+const MAX_SEEN_DELIVERIES = 1_000;
+
+/**
+ * Returns true if this delivery ID has been processed before.
+ * Automatically prunes the oldest entry when the set is full.
+ */
+export function isDuplicateDelivery(id: string): boolean {
+  if (!id) return false;
+  if (SEEN_DELIVERIES.has(id)) return true;
+  if (SEEN_DELIVERIES.size >= MAX_SEEN_DELIVERIES) {
+    // Delete the oldest (first inserted) entry
+    SEEN_DELIVERIES.delete(SEEN_DELIVERIES.values().next().value ?? "");
+  }
+  SEEN_DELIVERIES.add(id);
+  return false;
+}
+
+/**
+ * Sanitize a user-supplied comment body before storing or forwarding.
+ * Strips null bytes, collapses runs of whitespace/newlines, truncates.
+ */
+export function sanitizeBody(body: string, maxLen = 500): string {
+  return body
+    .split(String.fromCharCode(0)) // strip null bytes
+    .join("")
+    .replace(/[\r\n\t]+/g, " ") // collapse runs of whitespace
+    .trim()
+    .slice(0, maxLen);
+}
+
+/** Fetch with a hard timeout. Aborts and rejects if the request exceeds `ms` milliseconds. */
+async function fetchWithTimeout(url: string, init: RequestInit, ms = 15_000): Promise<Response> {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: ac.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Maximum review events buffered per PR window (memory / prompt-size guard). */
+const MAX_EVENTS_PER_WINDOW = 50;
+
 // ── PR Review Debounce ────────────────────────────────────────────────────────
-const REVIEW_DEBOUNCE_MS = Number.parseInt(process.env.REVIEW_DEBOUNCE_MS ?? "30000", 10);
+const REVIEW_DEBOUNCE_MS = Number.parseInt(process.env.REVIEW_DEBOUNCE_MS ?? "30000", 10) || 30_000;
 const REVIEW_COOLDOWN_MS = 5 * 60 * 1000; // 5 min — discard events after a notification fires
 
 export interface ReviewEventRecord {
   type: "review" | "review_comment" | "issue_comment" | "unresolved_thread";
   reviewer: string;
-  /** Uppercase review state, e.g. CHANGES_REQUESTED */
-  state?: string;
+  /** Review state from PRReview — undefined for comment/thread events. */
+  state?: PRReview["state"];
   body: string;
   url: string;
   /** File path for line-level comments */
@@ -74,6 +127,7 @@ export function scheduleReviewNotification(
 
   const existing = pendingReviews.get(key);
   if (existing) {
+    if (existing.events.length >= MAX_EVENTS_PER_WINDOW) return false; // window full
     clearTimeout(existing.timer);
     existing.events.push(event);
     existing.timer = setTimeout(() => {
@@ -122,7 +176,7 @@ export function buildReviewNotification(
     const stateLabel = reviewRecord?.state ? ` [${reviewRecord.state}]` : "";
     lines.push(`@${reviewer}${stateLabel}:`);
     for (const ev of revEvents) {
-      const snippet = ev.body.replace(/\n/g, " ").slice(0, 120);
+      const snippet = ev.body.slice(0, 120);
       const location = ev.path ? ` (${ev.path})` : "";
       const prefix = ev.type === "unresolved_thread" ? "🔄 re-opened" : "•";
       lines.push(`  ${prefix} "${snippet}"${location}`);
@@ -401,7 +455,7 @@ async function fetchPRMergeableState(
   prNumber: number,
   token: string,
 ): Promise<MergeableState> {
-  const resp = await fetch(`https://api.github.com/repos/${repo}/pulls/${prNumber}`, {
+  const resp = await fetchWithTimeout(`https://api.github.com/repos/${repo}/pulls/${prNumber}`, {
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: "application/vnd.github+json",
@@ -430,7 +484,7 @@ export async function checkPRsAfterPush(
   // Give GitHub a moment to start computing mergeability
   await new Promise<void>((r) => setTimeout(r, 4_000));
 
-  const resp = await fetch(
+  const resp = await fetchWithTimeout(
     `https://api.github.com/repos/${repo}/pulls?state=open&base=${baseBranch}&per_page=20`,
     {
       headers: {
@@ -439,6 +493,7 @@ export async function checkPRsAfterPush(
         "X-GitHub-Api-Version": "2022-11-28",
       },
     },
+    15_000,
   );
 
   if (!resp.ok) {
@@ -555,7 +610,7 @@ export function createMcpServer(): McpServer {
 
       const [, owner, repo, runId] = match;
       try {
-        const resp = await fetch(
+        const resp = await fetchWithTimeout(
           `https://api.github.com/repos/${owner}/${repo}/actions/runs/${runId}/logs`,
           {
             headers: {
@@ -564,6 +619,7 @@ export function createMcpServer(): McpServer {
             },
             redirect: "follow",
           },
+          60_000,
         );
 
         if (!resp.ok) {
@@ -608,6 +664,12 @@ export function startWebhookServer(mcp: McpServer): ReturnType<typeof Bun.serve>
       }
 
       const body = await req.text();
+
+      if (isOversized(body)) {
+        log("Rejected oversized payload");
+        return new Response("Payload too large", { status: 413 });
+      }
+
       const signature = req.headers.get("x-hub-signature-256");
 
       if (!verifySignature(body, signature)) {
@@ -617,6 +679,11 @@ export function startWebhookServer(mcp: McpServer): ReturnType<typeof Bun.serve>
 
       const event = req.headers.get("x-github-event") ?? "unknown";
       const deliveryId = req.headers.get("x-github-delivery") ?? "";
+
+      if (isDuplicateDelivery(deliveryId)) {
+        log(`Duplicate delivery ${deliveryId} — skipping`);
+        return new Response("OK", { status: 200 });
+      }
 
       if (event === "ping") {
         log("Ping received — webhook configured successfully");
@@ -633,7 +700,7 @@ export function startWebhookServer(mcp: McpServer): ReturnType<typeof Bun.serve>
       log(`Received: ${event} (${payload.action ?? "no action"}) delivery=${deliveryId}`);
 
       if (event === "push") {
-        const push = JSON.parse(body) as GitHubPushPayload;
+        const push = payload as unknown as GitHubPushPayload;
         const branch = push.ref.replace("refs/heads/", "");
         const token = process.env.GITHUB_TOKEN;
         if (MAIN_BRANCHES.has(branch) && token) {
@@ -658,12 +725,12 @@ export function startWebhookServer(mcp: McpServer): ReturnType<typeof Bun.serve>
         if (event === "pull_request_review" && payload.action === "submitted") {
           const review = payload.review as PRReview | undefined;
           const pr = payload.pull_request;
-          if (review && pr && (review.state as string) !== "pending") {
+          if (review && pr && review.state !== "pending") {
             reviewEvent = {
               type: "review",
               reviewer: review.user.login,
               state: review.state,
-              body: review.body ?? "(no review body)",
+              body: sanitizeBody(review.body ?? "(no review body)"),
               url: review.html_url,
             };
             prMeta = { prNumber: pr.number, prTitle: pr.title, prUrl: pr.html_url, repo };
@@ -675,7 +742,7 @@ export function startWebhookServer(mcp: McpServer): ReturnType<typeof Bun.serve>
             reviewEvent = {
               type: "review_comment",
               reviewer: comment.user.login,
-              body: comment.body,
+              body: sanitizeBody(comment.body),
               url: comment.html_url,
               path: comment.path,
             };
@@ -689,7 +756,7 @@ export function startWebhookServer(mcp: McpServer): ReturnType<typeof Bun.serve>
             reviewEvent = {
               type: "issue_comment",
               reviewer: comment.user.login,
-              body: comment.body,
+              body: sanitizeBody(comment.body),
               url: comment.html_url,
             };
             prMeta = {
@@ -708,7 +775,7 @@ export function startWebhookServer(mcp: McpServer): ReturnType<typeof Bun.serve>
             reviewEvent = {
               type: "unresolved_thread",
               reviewer: payload.sender?.login ?? firstComment.user.login,
-              body: firstComment.body,
+              body: sanitizeBody(firstComment.body),
               url: firstComment.html_url,
               path: firstComment.path,
             };
@@ -782,12 +849,4 @@ export function startWebhookServer(mcp: McpServer): ReturnType<typeof Bun.serve>
       return new Response("OK", { status: 200 });
     },
   });
-}
-
-// ── Request Size Guard ────────────────────────────────────────────────────────
-const MAX_BODY_BYTES = 25 * 1024; // 25 KB — GitHub webhook payloads are well under this
-
-/** Returns true if the raw body exceeds the allowed limit. */
-export function isOversized(body: string): boolean {
-  return Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES;
 }

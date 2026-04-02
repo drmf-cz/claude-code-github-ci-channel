@@ -2,10 +2,13 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   buildReviewNotification,
   isActionable,
+  isDuplicateDelivery,
   isInReviewCooldown,
+  isOversized,
   parseWorkflowEvent,
   pendingReviews,
   reviewCooldowns,
+  sanitizeBody,
   scheduleReviewNotification,
   verifySignature,
 } from "../server.js";
@@ -389,7 +392,7 @@ describe("buildReviewNotification", () => {
       {
         type: "review" as const,
         reviewer: "alice",
-        state: "CHANGES_REQUESTED",
+        state: "CHANGES_REQUESTED" as const,
         body: "Please add tests.",
         url: "https://github.com/acme/repo/pull/42#pullrequestreview-1",
       },
@@ -404,7 +407,7 @@ describe("buildReviewNotification", () => {
       {
         type: "review" as const,
         reviewer: "alice",
-        state: "CHANGES_REQUESTED",
+        state: "CHANGES_REQUESTED" as const,
         body: "Needs error handling.",
         url: "https://github.com/acme/repo/pull/42#r1",
       },
@@ -470,7 +473,7 @@ describe("buildReviewNotification", () => {
       {
         type: "review" as const,
         reviewer: "alice",
-        state: "APPROVED",
+        state: "APPROVED" as const,
         body: "Ship it!",
         url: "https://github.com/acme/repo/pull/42#r4",
       },
@@ -505,7 +508,7 @@ describe("scheduleReviewNotification — debounce", () => {
   const event = {
     type: "review" as const,
     reviewer: "alice",
-    state: "COMMENTED",
+    state: "COMMENTED" as const,
     body: "nit",
     url: "https://github.com/acme/repo/pull/1#r1",
   };
@@ -563,5 +566,54 @@ describe("isInReviewCooldown", () => {
     reviewCooldowns.set("x/y/1", Date.now() - 1);
     expect(isInReviewCooldown("x/y/1")).toBe(false);
     expect(reviewCooldowns.has("x/y/1")).toBe(false);
+  });
+});
+
+// ── isOversized ───────────────────────────────────────────────────────────────
+describe("isOversized", () => {
+  it("returns false for a normal-sized payload", () => {
+    expect(isOversized('{"action":"completed"}')).toBe(false);
+  });
+
+  it("returns true when body exceeds 10 MB", () => {
+    expect(isOversized("x".repeat(10 * 1024 * 1024 + 1))).toBe(true);
+  });
+});
+
+// ── isDuplicateDelivery ───────────────────────────────────────────────────────
+describe("isDuplicateDelivery", () => {
+  it("returns false for a new delivery ID", () => {
+    expect(isDuplicateDelivery(`unique-id-${Date.now()}`)).toBe(false);
+  });
+
+  it("returns true for a repeated delivery ID", () => {
+    const id = `replay-${Math.random()}`;
+    isDuplicateDelivery(id);
+    expect(isDuplicateDelivery(id)).toBe(true);
+  });
+
+  it("returns false for an empty string", () => {
+    expect(isDuplicateDelivery("")).toBe(false);
+  });
+});
+
+// ── sanitizeBody ──────────────────────────────────────────────────────────────
+describe("sanitizeBody", () => {
+  it("removes null bytes", () => {
+    const nul = String.fromCharCode(0);
+    expect(sanitizeBody(`hello${nul}world`)).toBe("helloworld");
+  });
+
+  it("collapses newlines and tabs to a single space", () => {
+    expect(sanitizeBody("line1\nline2\ttab")).toBe("line1 line2 tab");
+  });
+
+  it("truncates to maxLen", () => {
+    expect(sanitizeBody("a".repeat(600))).toHaveLength(500);
+    expect(sanitizeBody("a".repeat(10), 5)).toHaveLength(5);
+  });
+
+  it("trims leading/trailing whitespace", () => {
+    expect(sanitizeBody("  hello  ")).toBe("hello");
   });
 });

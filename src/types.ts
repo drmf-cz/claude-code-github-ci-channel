@@ -67,8 +67,9 @@ export interface PullRequest {
 export interface PRReview {
   id: number;
   user: { login: string };
-  /** GitHub uses uppercase: APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED */
-  state: "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED" | "DISMISSED";
+  /** GitHub uses uppercase: APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED.
+   * Draft reviews not yet submitted use lowercase "pending" (GitHub API inconsistency). */
+  state: "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED" | "DISMISSED" | "pending";
   body: string | null;
   html_url: string;
   submitted_at: string | null;
