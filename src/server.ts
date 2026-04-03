@@ -294,10 +294,18 @@ function parseWorkflowRunEvent(
   config: Config,
 ): CINotification | null {
   const run = payload.workflow_run;
-  if (!run) return null;
+  if (!run) {
+    log(`[skip] workflow_run: no workflow_run object in payload`);
+    return null;
+  }
 
   // Only notify on failures — successes, cancellations, etc. are silent
-  if (run.conclusion !== "failure") return null;
+  if (run.conclusion !== "failure") {
+    log(
+      `[skip] workflow_run "${run.name ?? "?"}" on ${repo}@${run.head_branch ?? "?"}: conclusion=${run.conclusion} (only "failure" notifies)`,
+    );
+    return null;
+  }
 
   const status = run.conclusion ?? run.status;
   const emoji = statusEmoji(run.conclusion);
@@ -362,8 +370,16 @@ export function parseWorkflowEvent(
 
   if (event === "workflow_job") {
     const job = payload.workflow_job;
-    if (!job || payload.action !== "completed") return null;
-    if (job.conclusion !== "failure") return null;
+    if (!job || payload.action !== "completed") {
+      log(`[skip] workflow_job: action=${payload.action ?? "none"} (only "completed" acts)`);
+      return null;
+    }
+    if (job.conclusion !== "failure") {
+      log(
+        `[skip] workflow_job "${job.name ?? "?"}" on ${repo}: conclusion=${job.conclusion} (only "failure" notifies)`,
+      );
+      return null;
+    }
 
     const status = job.conclusion ?? "unknown";
     const emoji = statusEmoji(job.conclusion);
@@ -395,8 +411,17 @@ export function parseWorkflowEvent(
 
   if (event === "check_suite" || event === "check_run") {
     const check = event === "check_suite" ? payload.check_suite : payload.check_run;
-    if (!check || payload.action !== "completed") return null;
-    if (check.conclusion !== "failure") return null;
+    if (!check || payload.action !== "completed") {
+      log(`[skip] ${event}: action=${payload.action ?? "none"} (only "completed" acts)`);
+      return null;
+    }
+    if (check.conclusion !== "failure") {
+      const name = "name" in check ? (check.name ?? "?") : (check.app?.name ?? "?");
+      log(
+        `[skip] ${event} "${name}" on ${repo}: conclusion=${check.conclusion} (only "failure" notifies)`,
+      );
+      return null;
+    }
 
     const status = check.conclusion ?? "unknown";
     const emoji = statusEmoji(check.conclusion);
@@ -485,6 +510,9 @@ export function parsePullRequestEvent(
     };
   }
 
+  log(
+    `[skip] pull_request PR #${pr.number} on ${repo}: mergeable_state=${state} (only "dirty" or "behind" notifies)`,
+  );
   return null;
 }
 
@@ -917,6 +945,19 @@ async function isPRAllowed(
   return false;
 }
 
+/** Log why parseReviewWebhookPayload returned null for a given event. */
+function logReviewSkipReason(event: string, payload: GitHubWebhookPayload): void {
+  let hint = "";
+  if (event === "pull_request_review") {
+    const state = (payload.review as { state?: string } | undefined)?.state ?? "?";
+    hint = ` (review.state=${state}; need submitted+non-pending)`;
+  } else if (event === "issue_comment") {
+    const hasPR = !!(payload.issue as { pull_request?: unknown } | undefined)?.pull_request;
+    hint = ` (issue.pull_request present: ${hasPR}; need PR comment, not issue comment)`;
+  }
+  log(`[skip] ${event}/${payload.action ?? "?"} — parseReviewWebhookPayload returned null${hint}`);
+}
+
 // ── HTTP Webhook Server ───────────────────────────────────────────────────────
 
 /**
@@ -988,7 +1029,13 @@ export function startWebhookServer(
         const branch = push.ref.replace("refs/heads/", "");
         const token = process.env.GITHUB_TOKEN;
         const mainBranches = new Set(config.server.main_branches);
-        if (mainBranches.has(branch) && token) {
+        if (!mainBranches.has(branch)) {
+          log(
+            `[skip] push to "${branch}" — not a main branch (${[...mainBranches].join(", ")}) — PR checks skipped`,
+          );
+        } else if (!token) {
+          log(`[skip] push to "${branch}" — GITHUB_TOKEN not set — PR checks skipped`);
+        } else {
           log(`Push to ${branch} — checking open PRs for merge status`);
           void checkPRsAfterPush(push.repository.full_name, branch, token, notify, config);
         }
@@ -1026,7 +1073,7 @@ export function startWebhookServer(
           );
           if (!accepted) log(`PR #${prMeta.prNumber} review event discarded (cooldown active)`);
         } else {
-          log(`Skipping ${event}/${payload.action ?? ""} — not a PR review we act on`);
+          logReviewSkipReason(event, payload);
         }
         return new Response("OK", { status: 200 });
       }
@@ -1052,7 +1099,12 @@ export function startWebhookServer(
           : parseWorkflowEvent(event, payload, config);
 
       if (!notification) {
+<<<<<<< HEAD
         // Actionable event type but no notification produced (e.g. success filtered out)
+=======
+        // parse functions log the specific reason — this is just the outer guard
+        log(`[skip] ${event}/${payload.action ?? "?"}: parse returned null (see reason above)`);
+>>>>>>> ba6dcd7 (feat: add [skip] debug logs explaining why events are not notified)
         return new Response("OK", { status: 200 });
       }
 
