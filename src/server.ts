@@ -3,9 +3,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { Config } from "./config.js";
 import {
-  DEFAULT_CONFIG,
   buildWorktreePreamble,
   buildWorktreeRebaseSteps,
+  DEFAULT_CONFIG,
   interpolate,
 } from "./config.js";
 import type {

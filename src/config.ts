@@ -252,7 +252,7 @@ export function buildWorktreeRebaseSteps(
 export function buildWorktreePreamble(useWorktree: boolean): string {
   if (!useWorktree) return "";
   return (
-    "You are running inside an isolated Claude Code worktree (isolation=\"worktree\"). " +
+    'You are running inside an isolated Claude Code worktree (isolation="worktree"). ' +
     "All file edits and commits apply directly to this worktree — no separate setup needed.\n\n"
   );
 }
