@@ -900,51 +900,6 @@ export async function isCoAuthorAllowed(
  * by someone in allowed_authors. Co-author lookup requires a GITHUB_TOKEN and is only
  * attempted when no username entry matched.
  */
-/** Handles PR review / comment events (debounced). Returns a Response to send to GitHub. */
-async function handleReviewEvent(
-  event: string,
-  payload: GitHubWebhookPayload,
-  config: Config,
-  notify: NotifyFn,
-): Promise<Response> {
-  // For issue_comment the PR author is on payload.issue; for all others it's on payload.pull_request
-  const prAuthorLogin = payload.pull_request?.user.login ?? payload.issue?.user.login ?? "";
-  if (!isAuthorAllowed(prAuthorLogin, config.webhooks.allowed_authors)) {
-    log(`Skipping ${event} — PR author "${prAuthorLogin}" not in allowed_authors`);
-    return new Response("Skipped", { status: 200 });
-  }
-
-  const parsed = parseReviewWebhookPayload(event, payload.action, payload);
-  if (parsed) {
-    const { reviewEvent, prMeta } = parsed;
-    const repo = prMeta.repo;
-    const key = `${repo}/${prMeta.prNumber}`;
-    const routing = extractEventRouting(event, payload);
-    const accepted = scheduleReviewNotification(
-      key,
-      prMeta,
-      reviewEvent,
-      async (evts, meta) => {
-        const notification = buildReviewNotification(evts, meta, config);
-        try {
-          await notify(notification, routing);
-          log(`PR review notification sent for PR #${meta.prNumber} (${evts.length} event(s))`);
-        } catch (err) {
-          log(`Failed to send PR review notification for PR #${meta.prNumber}:`, err);
-        }
-      },
-      {
-        debounceMs: config.server.debounce_ms,
-        cooldownMs: config.server.cooldown_ms,
-        maxEvents: config.server.max_events_per_window,
-      },
-    );
-    if (!accepted) log(`PR #${prMeta.prNumber} review event discarded (cooldown active)`);
-  } else {
-    log(`Skipping ${event}/${payload.action ?? ""} — not a PR review we act on`);
-  }
-  return new Response("OK", { status: 200 });
-}
 
 async function isPRAllowed(
   payload: GitHubWebhookPayload,
