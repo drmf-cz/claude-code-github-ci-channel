@@ -52,7 +52,7 @@ describe("DEFAULT_CONFIG", () => {
       DEFAULT_CONFIG.behavior.on_pr_review,
       DEFAULT_CONFIG.behavior.on_merge_conflict,
       DEFAULT_CONFIG.behavior.on_branch_behind,
-    ];
+    ] as const;
     for (const hook of hooks) {
       expect(hook.instruction.length).toBeGreaterThan(0);
     }
@@ -130,5 +130,26 @@ describe("loadConfig", () => {
     const p = write("branches.yaml", "server:\n  main_branches:\n    - develop\n");
     const cfg = loadConfig(p);
     expect(cfg.server.main_branches).toEqual(["develop"]);
+  });
+
+  it("throws for a YAML file that parses to null", () => {
+    const p = write("null.yaml", "null\n");
+    expect(() => loadConfig(p)).toThrow("must be a YAML object");
+  });
+
+  it("throws for a YAML file that parses to a plain array", () => {
+    const p = write("array.yaml", "- a\n- b\n");
+    expect(() => loadConfig(p)).toThrow("must be a YAML object");
+  });
+
+  it("overrides nested instruction field", () => {
+    const p = write(
+      "instr.yaml",
+      "behavior:\n  on_ci_failure_main:\n    instruction: custom instruction\n",
+    );
+    const cfg = loadConfig(p);
+    expect(cfg.behavior.on_ci_failure_main.instruction).toBe("custom instruction");
+    // Other behavior fields unchanged
+    expect(cfg.behavior.on_pr_review.skill).toBe("pr-comment-response");
   });
 });

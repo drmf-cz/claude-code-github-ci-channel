@@ -47,11 +47,11 @@ the mux. You never need to pass secrets on the command line.
 
 ```bash
 # After global install (recommended) — reads .env from current directory
-github-ci-mux
-github-ci-mux --config /path/to/my-config.yaml   # with optional YAML config
+claude-beacon-mux
+claude-beacon-mux --config /path/to/my-config.yaml   # with optional YAML config
 
 # Or via bunx (no install needed — always uses latest published version)
-bunx -p claude-code-github-ci-channel github-ci-mux
+bunx -p claude-beacon claude-beacon-mux
 
 # Or from a cloned repo
 bun run start:mux
@@ -60,9 +60,9 @@ bun run start:mux
 You should see:
 
 ```
-[github-ci:mux] MCP HTTP server listening on http://127.0.0.1:9444/mcp
-[github-ci:mux] Webhook server listening on http://localhost:9443
-[github-ci:mux] Mux ready — waiting for Claude Code sessions and webhook events.
+[claude-beacon:mux] MCP HTTP server listening on http://127.0.0.1:9444/mcp
+[claude-beacon:mux] Webhook server listening on http://localhost:9443
+[claude-beacon:mux] Mux ready — waiting for Claude Code sessions and webhook events.
 ```
 
 Keep this process running — in a tmux pane, a background terminal, or as a
@@ -75,7 +75,7 @@ Instead of adding the server as a subprocess, add it as a URL-based MCP server.
 **Via CLI (recommended — run once, applies globally):**
 
 ```bash
-claude mcp add --transport http github-ci http://127.0.0.1:9444/mcp
+claude mcp add --transport http claude-beacon http://127.0.0.1:9444/mcp
 ```
 
 **Via `.mcp.json` (project-scoped, checked into the repo):**
@@ -83,7 +83,7 @@ claude mcp add --transport http github-ci http://127.0.0.1:9444/mcp
 ```json
 {
   "mcpServers": {
-    "github-ci": {
+    "claude-beacon": {
       "url": "http://127.0.0.1:9444/mcp",
       "type": "http"
     }
@@ -94,7 +94,7 @@ claude mcp add --transport http github-ci http://127.0.0.1:9444/mcp
 ### 4. Start Claude Code
 
 ```bash
-claude --dangerously-load-development-channels server:github-ci
+claude --dangerously-load-development-channels server:claude-beacon
 ```
 
 ### 5. Register your session filter (once per session)
@@ -113,7 +113,7 @@ Or add this to your `~/.claude/CLAUDE.md` so it happens automatically:
 ```markdown
 ## GitHub CI Channel — session filter
 
-When the github-ci MCP server connects, immediately call the `set_filter` tool:
+When the claude-beacon MCP server connects, immediately call the `set_filter` tool:
 1. Run `git remote get-url origin` and parse it to "owner/repo" format
 2. Run `git branch --show-current` to get the current branch
 3. Call `set_filter(repo="owner/repo", branch="branch-name")`
@@ -151,17 +151,17 @@ hook to do it automatically).
 
 ## Running as a systemd unit
 
-Save as `~/.config/systemd/user/github-ci-mux.service`:
+Save as `~/.config/systemd/user/claude-beacon-mux.service`:
 
 ```ini
 [Unit]
-Description=github-ci-channel mux server
+Description=claude-beacon mux server
 After=network.target
 
 [Service]
-WorkingDirectory=/path/to/claude-code-github-ci-channel
-ExecStart=/home/you/.bun/bin/bun run src/mux.ts
-EnvironmentFile=/path/to/claude-code-github-ci-channel/.env
+WorkingDirectory=/path/to/claude-beacon
+ExecStart=/home/you/.bun/bin/claude-beacon-mux
+EnvironmentFile=/path/to/claude-beacon/.env
 Restart=on-failure
 RestartSec=5
 
@@ -171,8 +171,8 @@ WantedBy=default.target
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable --now github-ci-mux
-journalctl --user -u github-ci-mux -f   # tail logs
+systemctl --user enable --now claude-beacon-mux
+journalctl --user -u claude-beacon-mux -f   # tail logs
 ```
 
 The `EnvironmentFile` directive loads your `.env` file — no secrets in the

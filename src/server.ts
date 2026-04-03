@@ -72,15 +72,21 @@ export function isDuplicateDelivery(id: string): boolean {
 }
 
 /**
- * Sanitize a user-supplied comment body before storing or forwarding.
- * Strips null bytes, collapses runs of whitespace/newlines, truncates.
+ * Sanitize a user-supplied string before embedding it in a notification Claude reads.
+ * - Strips null bytes and Unicode bidirectional-override characters (prompt injection vector)
+ * - Collapses runs of whitespace/newlines (defeats multi-line injections)
+ * - Truncates to maxLen
  */
 export function sanitizeBody(body: string, maxLen = 500): string {
-  return body
-    .replaceAll("\x00", "") // strip null bytes
-    .replace(/[\r\n\t]+/g, " ") // collapse runs of whitespace
-    .trim()
-    .slice(0, maxLen);
+  return (
+    body
+      .replaceAll("\x00", "") // strip null bytes
+      // strip Unicode bidi-override and zero-width characters used to hide injected text
+      .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g, "")
+      .replace(/[\r\n\t]+/g, " ") // collapse runs of whitespace
+      .trim()
+      .slice(0, maxLen)
+  );
 }
 
 /** Fetch with a hard timeout. Aborts and rejects if the request exceeds `ms` milliseconds. */
@@ -367,14 +373,17 @@ export function parseWorkflowEvent(
 
     const status = job.conclusion ?? "unknown";
     const emoji = statusEmoji(job.conclusion);
+    const jobName = sanitizeBody(job.name ?? "", 200);
+    const runnerName = sanitizeBody(job.runner_name ?? "unknown", 100);
+    const labels = (job.labels ?? []).map((l) => sanitizeBody(l, 50)).join(", ");
     const failedSteps = (job.steps ?? [])
       .filter((s) => s.conclusion === "failure")
-      .map((s) => `  - Step "${s.name}" failed`)
+      .map((s) => `  - Step "${sanitizeBody(s.name ?? "", 100)}" failed`)
       .join("\n");
 
     const lines = [
-      `${emoji} Job ${status.toUpperCase()}: "${job.name}" in ${repo}`,
-      `Runner: ${job.runner_name ?? "unknown"} | Labels: ${(job.labels ?? []).join(", ")}`,
+      `${emoji} Job ${status.toUpperCase()}: "${jobName}" in ${repo}`,
+      `Runner: ${runnerName} | Labels: ${labels}`,
       `URL: ${job.html_url}`,
     ];
     if (failedSteps) lines.push(`\nFailed steps:\n${failedSteps}`);
@@ -424,14 +433,18 @@ export function parsePullRequestEvent(
 
   const repo = payload.repository?.full_name ?? "unknown";
   const state: MergeableState = pr.mergeable_state;
+  // Sanitize user-controlled fields before embedding in notifications Claude acts on
+  const prTitle = sanitizeBody(pr.title ?? "", 200);
+  const headBranch = sanitizeBody(pr.head.ref ?? "", 100);
+  const baseBranch = sanitizeBody(pr.base.ref ?? "", 100);
 
   const prVars = {
     repo,
     pr_number: String(pr.number),
-    pr_title: pr.title,
+    pr_title: prTitle,
     pr_url: pr.html_url,
-    head_branch: pr.head.ref,
-    base_branch: pr.base.ref,
+    head_branch: headBranch,
+    base_branch: baseBranch,
   };
   const prMeta = {
     source: "github-ci",
@@ -439,9 +452,9 @@ export function parsePullRequestEvent(
     action: payload.action ?? "",
     repo,
     pr_number: String(pr.number),
-    pr_title: pr.title,
-    head_branch: pr.head.ref,
-    base_branch: pr.base.ref,
+    pr_title: prTitle,
+    head_branch: headBranch,
+    base_branch: baseBranch,
     pr_url: pr.html_url,
     mergeable_state: state,
     sender: payload.sender?.login ?? "",
@@ -457,8 +470,8 @@ export function parsePullRequestEvent(
     });
     return {
       summary: [
-        `⚠️ MERGE CONFLICT — PR #${pr.number}: "${pr.title}"`,
-        `Repo: ${repo} | Branch: ${pr.head.ref} → ${pr.base.ref}`,
+        `⚠️ MERGE CONFLICT — PR #${pr.number}: "${prTitle}"`,
+        `Repo: ${repo} | Branch: ${headBranch} → ${baseBranch}`,
         `URL: ${pr.html_url}`,
         "",
         instruction,
@@ -475,8 +488,8 @@ export function parsePullRequestEvent(
     });
     return {
       summary: [
-        `⬇️ BRANCH BEHIND BASE — PR #${pr.number}: "${pr.title}"`,
-        `Repo: ${repo} | Branch: ${pr.head.ref} → ${pr.base.ref}`,
+        `⬇️ BRANCH BEHIND BASE — PR #${pr.number}: "${prTitle}"`,
+        `Repo: ${repo} | Branch: ${headBranch} → ${baseBranch}`,
         `URL: ${pr.html_url}`,
         "",
         instruction,
@@ -635,7 +648,12 @@ export function parseReviewWebhookPayload(
         body: sanitizeBody(review.body ?? "(no review body)"),
         url: review.html_url,
       },
-      prMeta: { prNumber: pr.number, prTitle: pr.title, prUrl: pr.html_url, repo },
+      prMeta: {
+        prNumber: pr.number,
+        prTitle: sanitizeBody(pr.title ?? "", 200),
+        prUrl: pr.html_url,
+        repo,
+      },
     };
   }
 
@@ -651,7 +669,12 @@ export function parseReviewWebhookPayload(
         url: comment.html_url,
         path: comment.path,
       },
-      prMeta: { prNumber: pr.number, prTitle: pr.title, prUrl: pr.html_url, repo },
+      prMeta: {
+        prNumber: pr.number,
+        prTitle: sanitizeBody(pr.title ?? "", 200),
+        prUrl: pr.html_url,
+        repo,
+      },
     };
   }
 
@@ -667,7 +690,12 @@ export function parseReviewWebhookPayload(
         body: sanitizeBody(comment.body),
         url: comment.html_url,
       },
-      prMeta: { prNumber: issue.number, prTitle: issue.title, prUrl: issue.html_url, repo },
+      prMeta: {
+        prNumber: issue.number,
+        prTitle: sanitizeBody(issue.title ?? "", 200),
+        prUrl: issue.html_url,
+        repo,
+      },
     };
   }
 
@@ -684,7 +712,12 @@ export function parseReviewWebhookPayload(
         url: firstComment.html_url,
         path: firstComment.path,
       },
-      prMeta: { prNumber: pr.number, prTitle: pr.title, prUrl: pr.html_url, repo },
+      prMeta: {
+        prNumber: pr.number,
+        prTitle: sanitizeBody(pr.title ?? "", 200),
+        prUrl: pr.html_url,
+        repo,
+      },
     };
   }
 
@@ -742,30 +775,49 @@ export function createMcpServer(): McpServer {
 
       const [, owner, repo, runId] = match;
       try {
-        const resp = await fetchWithTimeout(
+        // Step 1: authenticated request to GitHub — manual redirect so the token
+        // is NOT forwarded to the presigned S3 URL GitHub redirects to.
+        const apiResp = await fetchWithTimeout(
           `https://api.github.com/repos/${owner}/${repo}/actions/runs/${runId}/logs`,
           {
             headers: {
               Authorization: `Bearer ${token}`,
               Accept: "application/vnd.github+json",
             },
-            redirect: "follow",
+            redirect: "manual",
           },
           60_000,
         );
 
-        if (!resp.ok) {
+        let logsResp: Response;
+        if (apiResp.status === 302 || apiResp.status === 301) {
+          // Step 2: fetch the presigned URL without Authorization — forwarding a PAT
+          // to S3 (or any non-GitHub host) is unnecessary and a token-exposure risk.
+          const location = apiResp.headers.get("location");
+          if (!location) {
+            return {
+              content: [
+                { type: "text" as const, text: "GitHub redirected without a location header" },
+              ],
+            };
+          }
+          logsResp = await fetchWithTimeout(location, {}, 60_000);
+        } else {
+          logsResp = apiResp;
+        }
+
+        if (!logsResp.ok) {
           return {
             content: [
               {
                 type: "text" as const,
-                text: `GitHub API error: ${resp.status} ${resp.statusText}`,
+                text: `GitHub API error: ${logsResp.status} ${logsResp.statusText}`,
               },
             ],
           };
         }
 
-        const text = await resp.text();
+        const text = await logsResp.text();
         const truncated =
           text.length > MAX_LOG_CHARS ? `...(truncated)\n${text.slice(-MAX_LOG_CHARS)}` : text;
         return { content: [{ type: "text" as const, text: truncated }] };
