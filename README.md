@@ -171,7 +171,7 @@ Replace `/home/you` with your home directory (`echo $HOME`). Bun installs global
   "mcpServers": {
     "claude-beacon": {
       "command": "/home/you/.bun/bin/bunx",
-      "args": ["claude-beacon"],
+      "args": ["claude-beacon", "--author", "YourGitHubUsername"],
       "env": {
         "GITHUB_WEBHOOK_SECRET": "your-secret-from-step-2",
         "GITHUB_TOKEN": "your-pat"
@@ -600,4 +600,4 @@ Biome v2 is configured in `biome.json` with strict rules. One deliberate deviati
 - `.env` is gitignored — secrets stay local
 - `GITHUB_WEBHOOK_SECRET` is **required** — omitting it causes all requests to be rejected; set `WEBHOOK_DEV_MODE=true` to bypass verification in local dev only
 
-See [AGENTS.md](AGENTS.md) for the full security analysis and architecture reference.
+See [AGENTS.md](AGENTS.md) for the architecture reference and contributor guide.

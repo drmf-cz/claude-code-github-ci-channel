@@ -1,4 +1,4 @@
-# AGENTS.md — claude-code-github-ci-channel
+# AGENTS.md — claude-beacon
 
 ## Architecture
 
@@ -11,6 +11,7 @@ Two transport layers in the same Bun process:
 src/
 ├── index.ts      # Entrypoint: wires HTTP server + MCP stdio transport
 ├── server.ts     # Core: HMAC verification, event parsing, MCP server + fetch_workflow_logs tool
+├── config.ts     # Config loading, deep merge, template interpolation
 ├── types.ts      # Shared TypeScript interfaces for GitHub webhook payloads
 └── ghwatch.ts    # Option B entrypoint: GitHub Events API poller (no tunnel needed)
 ```
@@ -20,11 +21,12 @@ src/
 | Export | Description |
 |---|---|
 | `verifySignature(payload, sig)` | HMAC-SHA256 verification with `timingSafeEqual` |
-| `parseWorkflowEvent(event, payload)` | `workflow_run` / `workflow_job` / `check_suite` → `CINotification` |
-| `parsePullRequestEvent(payload)` | `pull_request` dirty/behind → `CINotification` |
+| `parseWorkflowEvent(event, payload, config)` | `workflow_run` / `workflow_job` / `check_suite` → `CINotification` |
+| `parsePullRequestEvent(payload, config)` | `pull_request` dirty/behind → `CINotification` |
+| `parseReviewWebhookPayload(event, action, payload)` | `pull_request_review` / `pull_request_review_comment` / `issue_comment` → `ReviewParsedResult` |
 | `isActionable(event, payload)` | Filters to completed + PR-conflict events only |
 | `createMcpServer()` | McpServer with `claude/channel` capability + `fetch_workflow_logs` tool |
-| `startWebhookServer(mcp)` | Starts Bun HTTP server |
+| `startWebhookServer(mcp, config)` | Starts Bun HTTP server |
 
 ---
 
@@ -69,41 +71,35 @@ Spawn a subagent to resolve them:
 ### 1. Install
 
 ```bash
-bun install
+bun add -g claude-beacon
+# or: bunx claude-beacon (no install needed)
 ```
 
-### 2. Configure `.env`
+### 2. Configure `.mcp.json`
 
-```ini
-WEBHOOK_PORT=9443
-GITHUB_WEBHOOK_SECRET=<openssl rand -hex 32>
-GITHUB_TOKEN=<fine-grained PAT, actions:read>
-```
-
-### 3. Add to `.mcp.json`
+Add to `~/.mcp.json` (all projects) or `.mcp.json` in your project root:
 
 ```json
 {
   "mcpServers": {
-    "github-ci": {
-      "command": "/home/you/.bun/bin/bun",
-      "args": ["run", "/path/to/src/index.ts"],
+    "claude-beacon": {
+      "command": "/home/you/.bun/bin/claude-beacon",
+      "args": ["--author", "YourGitHubUsername"],
       "env": {
-        "WEBHOOK_PORT": "9443",
-        "GITHUB_WEBHOOK_SECRET": "your-secret",
-        "GITHUB_TOKEN": "ghp_your_token"
+        "GITHUB_WEBHOOK_SECRET": "your-webhook-secret",
+        "GITHUB_TOKEN": "your-pat"
       }
     }
   }
 }
 ```
 
-**Use the absolute path to bun.** Claude Code does not inherit your shell PATH.
+`--author` is **required** — the server refuses to start without at least one entry. It accepts GitHub usernames and email addresses (for Co-Authored-By matching). Equivalent to `webhooks.allowed_authors` in a YAML config file.
 
-### 4. Start Claude Code
+### 3. Start Claude Code
 
 ```bash
-claude --dangerously-load-development-channels server:github-ci
+claude --dangerously-load-development-channels server:claude-beacon
 ```
 
 ---
@@ -119,6 +115,11 @@ claude --dangerously-load-development-channels server:github-ci
    - ✅ Workflow jobs
    - ✅ Check suites
    - ✅ Pull requests
+   - ✅ Pull request reviews
+   - ✅ Pull request review comments
+   - ✅ Pull request review threads
+   - ✅ Issue comments
+   - ✅ Pushes
 
 ### Tunnel options
 
@@ -145,9 +146,9 @@ Cloudflared free tier assigns a new URL on each restart — update GitHub webhoo
 ```json
 {
   "mcpServers": {
-    "github-ci": {
-      "command": "/home/you/.bun/bin/bun",
-      "args": ["run", "/path/to/src/ghwatch.ts"],
+    "claude-beacon": {
+      "command": "/home/you/.bun/bin/bunx",
+      "args": ["claude-beacon-mux"],
       "env": { "WATCH_REPOS": "owner/repo1,owner/repo2" }
     }
   }
@@ -167,6 +168,8 @@ Cloudflared free tier assigns a new URL on each restart — update GitHub webhoo
 | `.env` gitignore | `.env` listed in `.gitignore` | Correct |
 | Prompt injection | Fallback handler does NOT dump raw payload | Safe — unknown events only emit `event + action + repo` |
 | Token scope | `GITHUB_TOKEN` used read-only (`actions:read`) | Minimal privilege |
+| Payload sanitization | `sanitizeBody()` strips null bytes and Unicode bidi-override characters | Guards against prompt injection in PR titles/commit messages |
+| Replay protection | `isDuplicateDelivery()` deduplicates by `X-GitHub-Delivery` header | Prevents notification storms on webhook retries |
 
 ### Risks and Mitigations
 
@@ -177,6 +180,7 @@ The `summary` field from `parse*Event` is injected into the Claude Code session 
 Mitigations already in place:
 - Webhook signature verification — only authenticated GitHub events reach parsing
 - Field extraction is explicit (not raw JSON dump)
+- `sanitizeBody()` strips null bytes and Unicode bidi-override characters
 - Claude Code's experimental channels flag warns users of this risk
 
 Remaining risk: if your GitHub org is compromised or a dependency is supply-chain-attacked, crafted payloads could attempt prompt injection. Claude Code sessions with auto-accept enabled are higher risk.
@@ -187,7 +191,7 @@ If `GITHUB_WEBHOOK_SECRET` is unset, all webhook requests are accepted. A warnin
 
 **LOW — Tunnel URL is unauthenticated**
 
-Anyone who discovers your cloudflared URL can send unsigned webhooks (rejected by HMAC) but can also enumerate the `/health` endpoint. The health endpoint returns only `{"status":"ok","server":"github-ci-channel"}` — no sensitive data.
+Anyone who discovers your cloudflared URL can send unsigned webhooks (rejected by HMAC) but can also enumerate the `/health` endpoint. The health endpoint returns only `{"status":"ok","server":"claude-beacon"}` — no sensitive data.
 
 **INFO — Git history is clean**
 
@@ -215,7 +219,7 @@ No secrets found in any commit. `.env` is gitignored. `.mcp.json` in the repo ha
 ## Development Workflow
 
 ```bash
-bun test              # 31 tests
+bun test              # 96 tests
 bun run typecheck     # tsc --noEmit (strict)
 bun run lint          # Biome v2
 bun run lint:fix      # Auto-fix
