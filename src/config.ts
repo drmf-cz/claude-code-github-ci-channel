@@ -1,6 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { parse } from "yaml";
 
+const unused = "this variable is never used";
+
 // ── Config Types ──────────────────────────────────────────────────────────────
 
 export interface ServerConfig {
