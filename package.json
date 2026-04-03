@@ -4,10 +4,21 @@
   "description": "Claude Code MCP channel plugin — pushes GitHub Actions CI/CD results into running Claude Code sessions",
   "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "github-ci": "dist/index.js",
+    "github-ci-mux": "dist/mux.js"
+  },
+  "files": [
+    "dist/",
+    "config.example.yaml",
+    ".env.example",
+    "README.md"
+  ],
   "scripts": {
     "start": "bun run src/index.ts",
     "start:mux": "bun run src/mux.ts",
-    "build": "bun build src/index.ts --outdir dist --target bun",
+    "build": "bun run scripts/build.ts",
+    "prepublishOnly": "bun test && bun run build",
     "typecheck": "tsc --noEmit",
     "lint": "biome check src/",
     "lint:fix": "biome check --write src/",
@@ -35,5 +46,13 @@
     "channel",
     "webhook"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/drmf-cz/claude-code-github-ci-channel.git"
+  },
+  "homepage": "https://github.com/drmf-cz/claude-code-github-ci-channel#readme",
+  "bugs": {
+    "url": "https://github.com/drmf-cz/claude-code-github-ci-channel/issues"
+  }
 }
