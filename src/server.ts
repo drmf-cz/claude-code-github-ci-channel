@@ -3,7 +3,6 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { Config } from "./config.js";
 import { DEFAULT_CONFIG, interpolate } from "./config.js";
-import type { NotifyFn, RoutingKey } from "./hub-protocol.js";
 import type {
   CINotification,
   GitHubPushPayload,
@@ -13,6 +12,22 @@ import type {
   PRReview,
   PRReviewComment,
 } from "./types.js";
+
+// ── Routing types ─────────────────────────────────────────────────────────────
+
+/** Routing key extracted from each webhook event for session-level filtering. */
+export interface RoutingKey {
+  repo: string;
+  /** Branch the event originated from. null = send to all sessions for this repo. */
+  branch: string | null;
+}
+
+/**
+ * Callback invoked for every actionable webhook event.
+ * Standalone mode: pushes directly to the embedded MCP session.
+ * Mux mode: routes to the matching HTTP-connected session(s).
+ */
+export type NotifyFn = (notification: CINotification, routing: RoutingKey) => Promise<void>;
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 const MAX_LOG_CHARS = 8000;

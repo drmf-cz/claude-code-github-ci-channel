@@ -193,50 +193,81 @@ claude --dangerously-load-development-channels server:github-ci
 
 ---
 
-## Running multiple Claude Code sessions (hub + relay)
+## Running multiple Claude Code sessions (mux server)
 
-By default each Claude Code session starts its own webhook server subprocess. If you open a second session it fails to bind port 9443 and receives no events.
+By default the server is spawned as a subprocess by Claude Code and binds port 9443. A second session fails to bind that port and misses all events.
 
-The **hub + relay** mode solves this: one hub process owns the port and routes each event to the session whose current repo and branch match.
+The **mux server** (`src/mux.ts`) solves this: you run it once as a persistent process and every Claude Code session connects to it via a single local URL — no subprocess is spawned per session.
 
 ```
-GitHub → :9443 → [Hub]  ─── /tmp/ghci-hub.sock ───┬── Relay A (CC session, repo=foo branch=main)
-                                                    ├── Relay B (CC session, repo=foo branch=feat/x)
-                                                    └── Relay C (CC session, repo=bar branch=main)
+GitHub ──► :9443 (webhook receiver)
+                │
+           [mux — you start this once]
+                │
+           :9444/mcp  (MCP over HTTP — localhost only)
+           ┌────┴────┐
+      Session A   Session B   Session C …
 ```
 
 ### Quick setup
 
-**1. Start the hub once** (tmux pane, or [systemd unit](docs/multiplexer.md#running-as-a-systemd-unit)):
+**1. Create your `.env` file with your secrets:**
 
 ```bash
-GITHUB_WEBHOOK_SECRET=your-secret GITHUB_TOKEN=your-pat \
-  bun run /path/to/src/hub.ts [--config my-config.yaml]
+cp .env.example .env
+# Edit .env — fill in GITHUB_WEBHOOK_SECRET and GITHUB_TOKEN
 ```
 
-**2. Point each Claude Code session at the relay** instead of the standalone server:
+**2. Start the mux once** (tmux pane, background terminal, or [systemd unit](docs/multi-session.md#running-as-a-systemd-unit)):
+
+```bash
+bun run start:mux                              # Bun loads .env automatically
+bun run src/mux.ts --config my-config.yaml    # optional YAML config
+```
+
+**3. Register the mux in Claude Code** (run once — applies to all projects):
+
+```bash
+claude mcp add --transport http github-ci http://127.0.0.1:9444/mcp
+```
+
+Or add to `.mcp.json` in your project:
 
 ```json
 {
   "mcpServers": {
     "github-ci": {
-      "command": "/home/you/.bun/bin/bun",
-      "args": ["run", "/path/to/claude-code-github-ci-channel/src/relay.ts"],
-      "env": {
-        "GITHUB_TOKEN": "your-pat",
-        "GHCI_HUB_SOCKET": "/tmp/ghci-hub.sock"
-      }
+      "url": "http://127.0.0.1:9444/mcp",
+      "type": "http"
     }
   }
 }
 ```
 
-> Note: `GITHUB_WEBHOOK_SECRET` belongs in the **hub** environment only.  
-> The relay never processes raw webhook payloads.
+**4. Start Claude Code normally:**
 
-**3. Start Claude Code normally.** The relay auto-detects your current repo and branch from `git` and registers with the hub. When you switch branches the relay updates its filter within 30 seconds automatically.
+```bash
+claude --dangerously-load-development-channels server:github-ci
+```
 
-For full details — routing rules, protocol reference, systemd unit, comparison table — see **[docs/multiplexer.md](docs/multiplexer.md)**.
+**5. Register your session filter** — tell the mux which repo and branch this session is watching:
+
+```
+Call set_filter with the output of:
+  git remote get-url origin  → parse to owner/repo
+  git branch --show-current  → current branch
+```
+
+To make this automatic, add to `~/.claude/CLAUDE.md`:
+
+```markdown
+## GitHub CI Channel — session filter
+When github-ci MCP connects, call `set_filter` immediately:
+run `git remote get-url origin` (parse to owner/repo) and
+`git branch --show-current`, then call set_filter with those values.
+```
+
+For full details — routing rules, systemd setup, comparison table — see **[docs/multi-session.md](docs/multi-session.md)**.
 
 ---
 
