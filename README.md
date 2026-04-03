@@ -408,12 +408,18 @@ These control what Claude is asked to do when an event fires. Each field accepts
 |---|---|---|
 | `behavior.on_ci_failure_main.instruction` | `workflow_run` failure on a main branch | — |
 | `behavior.on_ci_failure_branch.instruction` | `workflow_run` failure on any other branch | — |
-| `behavior.on_pr_review.instruction` | PR review / comment events (after debounce) | `require_plan`, `skill` |
+| `behavior.on_pr_review.instruction` | PR review / comment events (after debounce) | `require_plan`, `skill`, `use_worktree` |
 | `behavior.on_merge_conflict.instruction` | PR with `mergeable_state: dirty` | — |
 | `behavior.on_branch_behind.instruction` | PR with `mergeable_state: behind` | — |
 | `behavior.code_style` | any PR review event | — |
 
 `code_style` is a free-form string prepended to every PR review notification. Describe your project's coding conventions here so Claude applies them consistently when addressing comments.
+
+**`behavior.worktrees`** — controls how subagents handle rebase and PR review work:
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `behavior.worktrees.mode` | `"temp"` \| `"native"` | `"temp"` | `temp`: classic `git worktree add/remove` shell commands. `native`: Claude Code's Agent tool `isolation="worktree"` — Claude manages worktree lifecycle automatically. Use `native` if you work in Claude Code native worktrees. |
 
 **`on_pr_review` sub-fields:**
 
@@ -421,18 +427,41 @@ These control what Claude is asked to do when an event fires. Each field accepts
 |---|---|---|---|
 | `behavior.on_pr_review.require_plan` | boolean | `true` | Whether Claude must enter plan mode before touching code |
 | `behavior.on_pr_review.skill` | string | `"pr-comment-response"` | Skill name invoked to handle the review |
+| `behavior.on_pr_review.use_worktree` | boolean | `false` | When `true`, the PR review subagent runs inside a native Claude Code worktree (`isolation="worktree"`) instead of the current session directory |
 
 ### Template placeholders
 
-The following placeholders are replaced at runtime inside any `instruction` string:
+The following placeholders are replaced at runtime inside `instruction` strings. Which placeholders are available depends on the hook:
+
+**CI failure hooks** (`on_ci_failure_main`, `on_ci_failure_branch`):
 
 | Placeholder | Value |
 |---|---|
 | `{repo}` | `owner/repo` |
-| `{branch}` | Branch name |
+| `{branch}` | Branch the workflow ran on |
+| `{run_url}` | Full URL of the GitHub Actions run |
+| `{workflow}` | Workflow name |
+| `{status}` | Conclusion (`failure`) |
+| `{commit}` | First line of the head commit message |
+
+**PR state hooks** (`on_merge_conflict`, `on_branch_behind`):
+
+| Placeholder | Value |
+|---|---|
+| `{repo}` | `owner/repo` |
 | `{pr_number}` | Pull request number |
-| `{workflow_name}` | Workflow / check name |
-| `{run_id}` | GitHub Actions run ID |
+| `{pr_title}` | PR title (sanitized) |
+| `{pr_url}` | PR URL |
+| `{head_branch}` | PR head branch |
+| `{base_branch}` | PR base branch |
+| `{worktree_steps}` | Auto-generated rebase steps based on `behavior.worktrees.mode` |
+
+**PR review hook** (`on_pr_review`):
+
+| Placeholder | Value |
+|---|---|
+| `{skill}` | Value of `behavior.on_pr_review.skill` |
+| `{worktree_preamble}` | Empty when `use_worktree: false`; a context sentence when `true` |
 
 ### Minimal example
 
@@ -550,7 +579,7 @@ Cloudflared free tier gives a new random URL on each restart. Update it: Repo �
 ## Development
 
 ```bash
-bun test              # 32 tests
+bun test              # run the test suite
 bun run typecheck     # tsc --noEmit (strict + noUncheckedIndexedAccess)
 bun run lint          # Biome v2
 bun run lint:fix      # Auto-fix lint issues
