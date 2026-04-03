@@ -672,10 +672,12 @@ describe("parseReviewWebhookPayload", () => {
       repository: repo,
       pull_request: pr,
       review: {
+        id: 1,
         state: "CHANGES_REQUESTED",
         body: "Please add tests.",
         html_url: "https://github.com/acme/repo/pull/7#pullrequestreview-1",
         user: { login: "reviewer1" },
+        submitted_at: "2026-01-01T00:00:00Z",
       },
     });
     expect(result).not.toBeNull();
@@ -690,10 +692,12 @@ describe("parseReviewWebhookPayload", () => {
       repository: repo,
       pull_request: pr,
       review: {
+        id: 2,
         state: "pending",
         body: "",
         html_url: "https://github.com/acme/repo/pull/7#r1",
         user: { login: "reviewer1" },
+        submitted_at: null,
       },
     });
     expect(result).toBeNull();
@@ -704,10 +708,12 @@ describe("parseReviewWebhookPayload", () => {
       repository: repo,
       pull_request: pr,
       comment: {
+        id: 10,
         body: "Nit: rename this variable.",
         html_url: "https://github.com/acme/repo/pull/7#r10",
         user: { login: "reviewer2" },
         path: "src/index.ts",
+        line: 42,
       },
     });
     expect(result).not.toBeNull();
@@ -722,9 +728,11 @@ describe("parseReviewWebhookPayload", () => {
         number: 7,
         title: "feat: improve widget",
         html_url: "https://github.com/acme/repo/pull/7",
+        user: { login: "author" },
         pull_request: { url: "https://api.github.com/repos/acme/repo/pulls/7" },
       },
       comment: {
+        id: 1,
         body: "LGTM!",
         html_url: "https://github.com/acme/repo/pull/7#issuecomment-1",
         user: { login: "commenter" },
@@ -741,9 +749,11 @@ describe("parseReviewWebhookPayload", () => {
         number: 3,
         title: "Bug report",
         html_url: "https://github.com/acme/repo/issues/3",
+        user: { login: "reporter" },
         // no pull_request field
       },
       comment: {
+        id: 2,
         body: "Reproduced.",
         html_url: "https://github.com/acme/repo/issues/3#issuecomment-2",
         user: { login: "user" },
@@ -758,10 +768,12 @@ describe("parseReviewWebhookPayload", () => {
       repository: repo,
       pull_request: { ...pr, title: maliciousTitle },
       review: {
+        id: 3,
         state: "COMMENTED",
         body: "ok",
         html_url: "https://github.com/acme/repo/pull/7#r1",
         user: { login: "r" },
+        submitted_at: "2026-01-01T00:00:00Z",
       },
     });
     expect(result?.prMeta.prTitle).not.toContain("\u202E");
