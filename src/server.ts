@@ -281,6 +281,9 @@ function parseWorkflowRunEvent(
   const run = payload.workflow_run;
   if (!run) return null;
 
+  // Only notify on failures — successes, cancellations, etc. are silent
+  if (run.conclusion !== "failure") return null;
+
   const status = run.conclusion ?? run.status;
   const emoji = statusEmoji(run.conclusion);
   const commitMsg = sanitizeBody(run.head_commit?.message?.split("\n")[0] ?? "", 200);
@@ -345,6 +348,7 @@ export function parseWorkflowEvent(
   if (event === "workflow_job") {
     const job = payload.workflow_job;
     if (!job || payload.action !== "completed") return null;
+    if (job.conclusion !== "failure") return null;
 
     const status = job.conclusion ?? "unknown";
     const emoji = statusEmoji(job.conclusion);
@@ -377,6 +381,7 @@ export function parseWorkflowEvent(
   if (event === "check_suite" || event === "check_run") {
     const check = event === "check_suite" ? payload.check_suite : payload.check_run;
     if (!check || payload.action !== "completed") return null;
+    if (check.conclusion !== "failure") return null;
 
     const status = check.conclusion ?? "unknown";
     const emoji = statusEmoji(check.conclusion);

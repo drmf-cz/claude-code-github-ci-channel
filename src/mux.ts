@@ -40,9 +40,30 @@ interface SessionEntry {
   repo: string | null;
   /** Branch filter. null = receive events for all branches of the matched repo. */
   branch: string | null;
+  /** Updated on every incoming request — used to detect idle/abandoned sessions. */
+  lastActivityAt: number;
 }
 
 const sessions = new Map<string, SessionEntry>();
+
+// ── Session TTL ───────────────────────────────────────────────────────────────
+// Streamable HTTP has no persistent connection, so onsessionclosed is not
+// reliably called when Claude Code exits or context-resets. Without this cleanup
+// sessions accumulate indefinitely and receive routing noise.
+const SESSION_IDLE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+setInterval(
+  () => {
+    const now = Date.now();
+    for (const [id, session] of sessions) {
+      if (now - session.lastActivityAt > SESSION_IDLE_TTL_MS) {
+        sessions.delete(id);
+        log(`Session ${id.slice(0, 8)} idle >30 min — removed (total: ${sessions.size})`);
+      }
+    }
+  },
+  5 * 60 * 1000,
+).unref(); // unref so the interval doesn't keep the process alive
 
 // ── Routing ───────────────────────────────────────────────────────────────────
 
@@ -126,7 +147,7 @@ function createSession(): {
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: () => randomUUID(),
     onsessioninitialized: (sessionId) => {
-      entry = { server, transport, repo: null, branch: null };
+      entry = { server, transport, repo: null, branch: null, lastActivityAt: Date.now() };
       sessions.set(sessionId, entry);
       log(`Session connected: ${sessionId.slice(0, 8)} (total: ${sessions.size})`);
     },
@@ -163,6 +184,7 @@ Bun.serve({
       if (!session) {
         return new Response("Session not found", { status: 404 });
       }
+      session.lastActivityAt = Date.now();
       return session.transport.handleRequest(req);
     }
 

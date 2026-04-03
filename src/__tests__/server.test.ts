@@ -109,7 +109,7 @@ describe("parseWorkflowEvent", () => {
   };
 
   describe("workflow_run", () => {
-    it("formats a successful run correctly", () => {
+    it("returns null for successful runs (silent — no notification)", () => {
       const payload: GitHubWebhookPayload = {
         ...basePayload,
         workflow_run: {
@@ -124,19 +124,7 @@ describe("parseWorkflowEvent", () => {
           head_commit: { message: "Fix the thing\n\nLonger description" },
         },
       };
-
-      const result = parseWorkflowEvent("workflow_run", payload);
-      expect(result).not.toBeNull();
-      expect(result?.summary).toContain("✅");
-      expect(result?.summary).toContain("SUCCESS");
-      expect(result?.summary).toContain("CI");
-      expect(result?.summary).toContain("acme/myrepo");
-      expect(result?.summary).toContain("main");
-      expect(result?.summary).toContain("Fix the thing");
-      expect(result?.summary).toContain("90s");
-      expect(result?.summary).toContain("#42");
-      expect(result?.meta.status).toBe("success");
-      expect(result?.meta.branch).toBe("main");
+      expect(parseWorkflowEvent("workflow_run", payload)).toBeNull();
     });
 
     it("includes failure diagnosis hint for failed runs", () => {
@@ -161,7 +149,7 @@ describe("parseWorkflowEvent", () => {
       expect(result?.meta.status).toBe("failure");
     });
 
-    it("uses cancelled emoji for cancelled runs", () => {
+    it("returns null for cancelled runs (silent — no notification)", () => {
       const payload: GitHubWebhookPayload = {
         ...basePayload,
         workflow_run: {
@@ -175,8 +163,7 @@ describe("parseWorkflowEvent", () => {
           updated_at: null,
         },
       };
-      const result = parseWorkflowEvent("workflow_run", payload);
-      expect(result?.summary).toContain("⚠️");
+      expect(parseWorkflowEvent("workflow_run", payload)).toBeNull();
     });
 
     it("returns null when workflow_run is missing from payload", () => {
@@ -217,13 +204,21 @@ describe("parseWorkflowEvent", () => {
   });
 
   describe("check_suite / check_run", () => {
-    it("formats check_suite completion", () => {
+    it("returns null for successful check_suite (silent)", () => {
       const payload: GitHubWebhookPayload = {
         ...basePayload,
         check_suite: { conclusion: "success", app: { name: "GitHub Actions" } },
       };
+      expect(parseWorkflowEvent("check_suite", payload)).toBeNull();
+    });
+
+    it("formats a failed check_suite", () => {
+      const payload: GitHubWebhookPayload = {
+        ...basePayload,
+        check_suite: { conclusion: "failure", app: { name: "GitHub Actions" } },
+      };
       const result = parseWorkflowEvent("check_suite", payload);
-      expect(result?.summary).toContain("✅");
+      expect(result?.summary).toContain("❌");
       expect(result?.summary).toContain("check_suite");
     });
 

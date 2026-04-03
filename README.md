@@ -15,8 +15,8 @@ The plugin runs inside your Claude Code session and listens for GitHub events. W
 |---|---|---|
 | `workflow_run` completed | failure on **main/master** | Fetches logs, diagnoses root cause, spawns subagent to fix and push |
 | `workflow_run` completed | failure on feature branch | Fetches logs, spawns subagent to investigate |
-| `workflow_run` completed | success | Silent — no notification |
-| `push` to main/master | open PRs exist | Checks each PR's merge status via API, notifies on `dirty` or `behind` |
+| `workflow_run` completed | success / cancelled / skipped | Silent — no notification |
+| `push` to **main/master only** | open PRs exist | Checks each PR's merge status via API, notifies on `dirty` or `behind` |
 | `pull_request` opened/synced | `mergeable_state: dirty` | Spawns subagent to rebase and resolve conflicts |
 | `pull_request` opened/synced | `mergeable_state: behind` | Spawns subagent to rebase cleanly |
 | `pull_request_review` submitted | any non-draft state | Debounced 30 s, then enters plan mode + `pr-comment-response` skill |
@@ -25,6 +25,8 @@ The plugin runs inside your Claude Code session and listens for GitHub events. W
 | `issue_comment` created | PR comment (not issue) | Accumulated in same debounce window |
 
 > **Why `push` events for PRs?** GitHub does not fire a `pull_request` event when the base branch advances and makes a PR go `behind`. The only way to detect this is to listen to `push` on main and then query the API for open PRs.
+>
+> **Push to a feature branch does not trigger PR checks.** Only a push to a main/master branch can make other PRs go `behind`. Pushing your own feature branch just updates that branch — it doesn't affect other PRs' merge status.
 
 ## Architecture
 
@@ -497,6 +499,19 @@ HMAC signature mismatch — the server and GitHub are using different secrets.
 ### No notification when a PR falls behind
 
 Check that **Pushes** is ticked in your GitHub webhook event settings. Without push events, the server never knows main has advanced. Also confirm `GITHUB_TOKEN` is set — it's required to query the PR list after a push.
+
+Also note: **push events only trigger behind-checks when the push is to a main/master branch.** Pushing to a feature branch does not trigger any PR checks.
+
+### Mux sends to too many sessions / Claude doesn't receive notifications
+
+Streamable HTTP transport has no persistent connection, so the mux can't detect when a Claude Code session exits. Each restart of Claude Code creates a new session; stale sessions accumulate.
+
+The mux includes a 30-minute idle TTL — sessions with no incoming requests for 30 minutes are removed automatically. You will see log lines like:
+```
+[github-ci:mux] Session a1b2c3d4 idle >30 min — removed (total: 2)
+```
+
+If you need to clear stale sessions immediately, restart the mux process. The session count should match the number of active Claude Code windows connected to it.
 
 ### "bun: command not found" in MCP logs
 
