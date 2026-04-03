@@ -150,6 +150,7 @@ Create or edit `~/.mcp.json` (all projects) or `.mcp.json` in your project root.
   "mcpServers": {
     "claude-beacon": {
       "command": "/home/you/.bun/bin/claude-beacon",
+      "args": ["--author", "YourGitHubUsername"],
       "env": {
         "GITHUB_WEBHOOK_SECRET": "your-secret-from-step-2",
         "GITHUB_TOKEN": "your-pat"
@@ -160,6 +161,8 @@ Create or edit `~/.mcp.json` (all projects) or `.mcp.json` in your project root.
 ```
 
 Replace `/home/you` with your home directory (`echo $HOME`). Bun installs globals to `~/.bun/bin/`.
+
+`--author` can be repeated for multiple entries and accepts both GitHub usernames and email addresses (see [`allowed_authors`](#webhook-filters)). It is equivalent to setting `webhooks.allowed_authors` in a config file — use whichever is more convenient.
 
 **If you cloned the repo** (or prefer `bunx` for always-latest):
 

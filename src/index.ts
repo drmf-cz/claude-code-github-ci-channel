@@ -5,14 +5,20 @@ import { createMcpServer, sendChannelNotification, startWebhookServer } from "./
 const log = (...args: unknown[]) => console.error("[github-ci]", ...args);
 
 // ── CLI argument parsing ──────────────────────────────────────────────────────
-// Supports: --config <path>
-function parseArgs(argv: string[]): { configPath: string | null } {
+// Supports: --config <path>  --author <username|email> (repeatable)
+function parseArgs(argv: string[]): { configPath: string | null; authors: string[] } {
   const configIdx = argv.indexOf("--config");
   const configPath = configIdx !== -1 ? (argv[configIdx + 1] ?? null) : null;
-  return { configPath };
+  const authors: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--author" && argv[i + 1]) {
+      authors.push(argv[i + 1] ?? "");
+    }
+  }
+  return { configPath, authors };
 }
 
-const { configPath } = parseArgs(process.argv.slice(2));
+const { configPath, authors } = parseArgs(process.argv.slice(2));
 
 let config = DEFAULT_CONFIG;
 if (configPath) {
@@ -25,6 +31,10 @@ if (configPath) {
   }
 }
 
+if (authors.length > 0) {
+  config.webhooks.allowed_authors = [...new Set([...config.webhooks.allowed_authors, ...authors])];
+}
+
 // ── Startup validation ────────────────────────────────────────────────────────
 if (config.webhooks.allowed_authors.length === 0) {
   log(
@@ -35,6 +45,7 @@ if (config.webhooks.allowed_authors.length === 0) {
     "\n    allowed_authors:",
     "\n      - YourGitHubUsername",
     "\n      - you@company.com  # for Co-Authored-By matching",
+    "\nOr pass directly: claude-beacon --author YourGitHubUsername",
   );
   process.exit(1);
 }
