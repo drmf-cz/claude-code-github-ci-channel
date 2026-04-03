@@ -50,7 +50,7 @@ HTTP :9443  (webhook receiver — subprocess of Claude Code)
                                           └─ spawns subagents to fix/rebase
 ```
 
-The MCP server is started automatically by Claude Code as a subprocess — you never run it manually.
+In standalone mode (`github-ci`), the MCP server is started automatically by Claude Code as a subprocess — you never run it manually. For multi-session use, run `github-ci-mux` once as a persistent process instead (see [Running multiple Claude Code sessions](#running-multiple-claude-code-sessions-mux-server)).
 
 ## Requirements
 
@@ -336,6 +336,25 @@ cp config.example.yaml my-config.yaml
 ```
 
 Pass it via `.mcp.json`:
+
+**After global install** (`bun add -g`):
+
+```json
+{
+  "mcpServers": {
+    "github-ci": {
+      "command": "/home/you/.bun/bin/github-ci",
+      "args": ["--config", "/path/to/my-config.yaml"],
+      "env": {
+        "GITHUB_WEBHOOK_SECRET": "...",
+        "GITHUB_TOKEN": "..."
+      }
+    }
+  }
+}
+```
+
+**If you cloned the repo:**
 
 ```json
 {

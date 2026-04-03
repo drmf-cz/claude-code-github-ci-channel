@@ -159,15 +159,23 @@ Description=github-ci-channel mux server
 After=network.target
 
 [Service]
-WorkingDirectory=/path/to/claude-code-github-ci-channel
-ExecStart=/home/you/.bun/bin/bun run src/mux.ts
-EnvironmentFile=/path/to/claude-code-github-ci-channel/.env
+# WorkingDirectory is where Bun looks for a .env file at startup.
+# Set it to whichever directory holds your .env with GITHUB_WEBHOOK_SECRET and GITHUB_TOKEN.
+WorkingDirectory=/path/to/directory/containing/.env
+ExecStart=/home/you/.bun/bin/github-ci-mux
 Restart=on-failure
 RestartSec=5
 
 [Install]
 WantedBy=default.target
 ```
+
+> Find the binary path with `which github-ci-mux` after a global install (`bun add -g claude-code-github-ci-channel`).
+>
+> If you are running from a cloned repo instead, replace `ExecStart` with:
+> ```
+> ExecStart=/home/you/.bun/bin/bun run /path/to/claude-code-github-ci-channel/src/mux.ts
+> ```
 
 ```bash
 systemctl --user daemon-reload
