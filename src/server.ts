@@ -570,6 +570,10 @@ export async function checkPRsAfterPush(
   // Give GitHub a moment to start computing mergeability
   await new Promise<void>((r) => setTimeout(r, 4_000));
 
+  // Log token prefix so you can verify the mux is using the expected credential.
+  // Only the first 8 characters are logged — safe to share, not enough to authenticate.
+  log(`checkPRsAfterPush: token prefix=${token.slice(0, 8)}... length=${token.length}`);
+
   const resp = await fetchWithTimeout(
     `https://api.github.com/repos/${repo}/pulls?state=open&base=${baseBranch}&per_page=20`,
     { headers: githubApiHeaders(token) },
@@ -577,7 +581,8 @@ export async function checkPRsAfterPush(
   );
 
   if (!resp.ok) {
-    log(`PR list fetch failed: ${resp.status}`);
+    const body = await resp.text().catch(() => "(could not read body)");
+    log(`PR list fetch failed: ${resp.status} — ${body}`);
     return;
   }
 
