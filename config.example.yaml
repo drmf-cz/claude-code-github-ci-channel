@@ -33,6 +33,23 @@ server:
 
 # ── Webhook filters ───────────────────────────────────────────────────────────
 webhooks:
+  # REQUIRED — claude-beacon will not start without at least one entry.
+  #
+  # Controls whose PRs trigger automatic actions (rebase, review response, etc.).
+  # Two kinds of entries:
+  #
+  #   username  (no "@") — matched against the PR author's GitHub login.
+  #   email     (with "@") — matched against Co-Authored-By commit headers.
+  #             Use this when a bot (e.g. Devin) authors the PR on your behalf;
+  #             your email appears in the commit trailer even though the bot is
+  #             listed as the PR author.
+  #
+  # Claude will only act on PRs where the author login OR a commit co-author
+  # email matches an entry in this list.
+  allowed_authors:
+    - YourGitHubUsername
+    # - you@company.com  # uncomment if you use Devin or a similar AI coding agent
+
   # Allowlist of GitHub event types to process.
   # Empty list (default) means all supported events are processed.
   # Useful for narrowing a shared webhook to only the events you care about.

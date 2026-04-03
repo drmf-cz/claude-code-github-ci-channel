@@ -150,6 +150,7 @@ Create or edit `~/.mcp.json` (all projects) or `.mcp.json` in your project root.
   "mcpServers": {
     "claude-beacon": {
       "command": "/home/you/.bun/bin/claude-beacon",
+      "args": ["--author", "YourGitHubUsername"],
       "env": {
         "GITHUB_WEBHOOK_SECRET": "your-secret-from-step-2",
         "GITHUB_TOKEN": "your-pat"
@@ -160,6 +161,8 @@ Create or edit `~/.mcp.json` (all projects) or `.mcp.json` in your project root.
 ```
 
 Replace `/home/you` with your home directory (`echo $HOME`). Bun installs globals to `~/.bun/bin/`.
+
+`--author` can be repeated for multiple entries and accepts both GitHub usernames and email addresses (see [`allowed_authors`](#webhook-filters)). It is equivalent to setting `webhooks.allowed_authors` in a config file — use whichever is more convenient.
 
 **If you cloned the repo** (or prefer `bunx` for always-latest):
 
@@ -373,8 +376,27 @@ Environment variables (`WEBHOOK_PORT`, `GITHUB_WEBHOOK_SECRET`, `GITHUB_TOKEN`) 
 
 | Key | Type | Default | Description |
 |---|---|---|---|
+| `webhooks.allowed_authors` | string[] | **required** | GitHub usernames and/or emails whose PRs trigger actions. See below. |
 | `webhooks.allowed_events` | string[] | `[]` (all) | Allowlist of GitHub event types to process. Empty = accept all supported types |
 | `webhooks.allowed_repos` | string[] | `[]` (all) | Allowlist of repos as `"owner/repo"`. Empty = accept all |
+
+**`allowed_authors` — required field**
+
+claude-beacon will refuse to start if this list is empty. It prevents the agent from rebasing or reviewing your colleagues' PRs.
+
+Two kinds of entries:
+
+- **Username** (no `@`) — matched against `pr.user.login`, the PR author's GitHub handle.
+- **Email** (contains `@`) — matched against `Co-Authored-By` commit trailers. Use this when an AI agent like Devin creates the PR on your behalf: your email appears in the commit even though the bot is the PR author. The co-author lookup makes an extra API call per PR and requires `GITHUB_TOKEN`.
+
+```yaml
+webhooks:
+  allowed_authors:
+    - Matovidlo              # your GitHub username
+    - martin@company.com     # your email, for Devin / AI-agent co-authored PRs
+```
+
+> **Review events** (PR review comments, inline comments) are filtered by username only — no co-author API call — to keep latency low. If a bot creates the PR, add the bot's GitHub login (e.g. `devin-ai-integration[bot]`) as an additional username entry to cover review events for those PRs.
 
 Supported event type strings: `push`, `workflow_run`, `workflow_job`, `check_suite`, `pull_request`, `pull_request_review`, `pull_request_review_comment`, `pull_request_review_thread`, `issue_comment`.
 
@@ -420,6 +442,8 @@ server:
   main_branches: [main, release]
 
 webhooks:
+  allowed_authors:
+    - YourGitHubUsername
   allowed_repos:
     - my-org/my-repo   # only watch this repo
 

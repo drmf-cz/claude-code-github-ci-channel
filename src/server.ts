@@ -552,6 +552,19 @@ export async function checkPRsAfterPush(
   }>;
 
   for (const pr of prs) {
+    if (!isAuthorAllowed(pr.user.login, config.webhooks.allowed_authors)) {
+      const coAuthorMatch = await isCoAuthorAllowed(
+        repo,
+        pr.number,
+        token,
+        config.webhooks.allowed_authors,
+      );
+      if (!coAuthorMatch) {
+        log(`PR #${pr.number} author "${pr.user.login}" not in allowed_authors — skipping`);
+        continue;
+      }
+    }
+
     // Always fetch individual PR — list endpoint omits mergeable_state
     let state = await fetchPRMergeableState(repo, pr.number, token);
 
@@ -832,6 +845,78 @@ function applyWebhookFilters(
   return null;
 }
 
+// ── Author Allow-list ─────────────────────────────────────────────────────────
+
+/**
+ * Returns true if the PR author's GitHub login matches any username entry
+ * (entries without "@") in allowed_authors. Case-sensitive to match GitHub.
+ */
+export function isAuthorAllowed(prAuthorLogin: string, allowedAuthors: string[]): boolean {
+  return allowedAuthors.filter((a) => !a.includes("@")).includes(prAuthorLogin);
+}
+
+/**
+ * Fetches PR commits via the GitHub API and checks whether any Co-Authored-By
+ * trailer contains an email present in allowed_authors.
+ *
+ * Used as a fallback when isAuthorAllowed() returns false — covers the case
+ * where a bot (e.g. Devin) is the PR author but a human is the co-author.
+ * Returns false immediately if no email entries are configured.
+ */
+export async function isCoAuthorAllowed(
+  repo: string,
+  prNumber: number,
+  token: string,
+  allowedAuthors: string[],
+): Promise<boolean> {
+  const emails = allowedAuthors.filter((a) => a.includes("@")).map((e) => e.toLowerCase());
+  if (emails.length === 0) return false;
+
+  const resp = await fetchWithTimeout(
+    `https://api.github.com/repos/${repo}/pulls/${prNumber}/commits`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    },
+    10_000,
+  );
+  if (!resp.ok) return false;
+
+  const commits = (await resp.json()) as Array<{ commit: { message: string } }>;
+  const coAuthorRe = /^Co-Authored-By:.*<([^>]+)>/gim;
+  for (const { commit } of commits) {
+    for (const match of commit.message.matchAll(coAuthorRe)) {
+      if (emails.includes(match[1]?.toLowerCase() ?? "")) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Returns true if the PR referenced by this webhook payload is authored (or co-authored)
+ * by someone in allowed_authors. Co-author lookup requires a GITHUB_TOKEN and is only
+ * attempted when no username entry matched.
+ */
+
+async function isPRAllowed(
+  payload: GitHubWebhookPayload,
+  allowedAuthors: string[],
+): Promise<boolean> {
+  const prAuthorLogin = payload.pull_request?.user.login ?? "";
+  if (isAuthorAllowed(prAuthorLogin, allowedAuthors)) return true;
+
+  const prNumber = payload.pull_request?.number;
+  const repo = payload.repository?.full_name ?? "";
+  const token = process.env.GITHUB_TOKEN;
+  if (token && prNumber !== undefined) {
+    return isCoAuthorAllowed(repo, prNumber, token, allowedAuthors);
+  }
+  return false;
+}
+
 // ── HTTP Webhook Server ───────────────────────────────────────────────────────
 
 /**
@@ -948,6 +1033,16 @@ export function startWebhookServer(
 
       if (!isActionable(event, payload)) {
         log(`Skipping non-actionable event: ${event}/${payload.action ?? ""}`);
+        return new Response("Skipped", { status: 200 });
+      }
+
+      if (
+        event === "pull_request" &&
+        !(await isPRAllowed(payload, config.webhooks.allowed_authors))
+      ) {
+        log(
+          `Skipping pull_request — PR author "${payload.pull_request?.user.login}" not in allowed_authors`,
+        );
         return new Response("Skipped", { status: 200 });
       }
 

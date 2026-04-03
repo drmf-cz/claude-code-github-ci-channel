@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   buildReviewNotification,
   isActionable,
+  isAuthorAllowed,
+  isCoAuthorAllowed,
   isDuplicateDelivery,
   isInReviewCooldown,
   isOversized,
@@ -622,5 +624,84 @@ describe("sanitizeBody", () => {
 
   it("trims leading/trailing whitespace", () => {
     expect(sanitizeBody("  hello  ")).toBe("hello");
+  });
+});
+
+// ── isAuthorAllowed ───────────────────────────────────────────────────────────
+describe("isAuthorAllowed", () => {
+  it("returns true when login matches a username entry", () => {
+    expect(isAuthorAllowed("Matovidlo", ["Matovidlo", "alice"])).toBe(true);
+  });
+
+  it("returns false when login is not in the list", () => {
+    expect(isAuthorAllowed("devin-ai-integration[bot]", ["Matovidlo"])).toBe(false);
+  });
+
+  it("ignores email entries for username matching", () => {
+    expect(isAuthorAllowed("martin@company.com", ["martin@company.com"])).toBe(false);
+  });
+
+  it("returns false for empty allowed_authors", () => {
+    expect(isAuthorAllowed("anyone", [])).toBe(false);
+  });
+
+  it("is case-sensitive", () => {
+    expect(isAuthorAllowed("matovidlo", ["Matovidlo"])).toBe(false);
+  });
+});
+
+// ── isCoAuthorAllowed ─────────────────────────────────────────────────────────
+describe("isCoAuthorAllowed", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  function mockCommits(messages: string[]) {
+    globalThis.fetch = (() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(messages.map((message) => ({ commit: { message } }))),
+      })) as unknown as typeof fetch;
+  }
+
+  it("returns false when no email entries are configured", async () => {
+    const result = await isCoAuthorAllowed("owner/repo", 1, "token", ["Matovidlo"]);
+    expect(result).toBe(false);
+  });
+
+  it("returns true when a commit Co-Authored-By email matches", async () => {
+    mockCommits(["fix: something\n\nCo-Authored-By: Martin <martin@company.com>"]);
+    const result = await isCoAuthorAllowed("owner/repo", 1, "token", ["martin@company.com"]);
+    expect(result).toBe(true);
+  });
+
+  it("matching is case-insensitive for emails", async () => {
+    mockCommits(["fix\n\nCo-Authored-By: Martin <Martin@Company.COM>"]);
+    const result = await isCoAuthorAllowed("owner/repo", 1, "token", ["martin@company.com"]);
+    expect(result).toBe(true);
+  });
+
+  it("returns false when email does not match any co-author", async () => {
+    mockCommits(["fix\n\nCo-Authored-By: Alice <alice@other.com>"]);
+    const result = await isCoAuthorAllowed("owner/repo", 1, "token", ["martin@company.com"]);
+    expect(result).toBe(false);
+  });
+
+  it("checks all commits in the PR", async () => {
+    mockCommits([
+      "first commit — no co-author",
+      "second commit\n\nCo-Authored-By: Martin <martin@company.com>",
+    ]);
+    const result = await isCoAuthorAllowed("owner/repo", 1, "token", ["martin@company.com"]);
+    expect(result).toBe(true);
+  });
+
+  it("returns false when the API call fails", async () => {
+    globalThis.fetch = (() =>
+      Promise.resolve({ ok: false, status: 403 })) as unknown as typeof fetch;
+    const result = await isCoAuthorAllowed("owner/repo", 1, "token", ["martin@company.com"]);
+    expect(result).toBe(false);
   });
 });

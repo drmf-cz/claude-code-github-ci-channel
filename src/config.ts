@@ -18,6 +18,19 @@ export interface ServerConfig {
 
 export interface WebhooksConfig {
   /**
+   * REQUIRED — GitHub usernames and/or email addresses whose PRs trigger actions.
+   * MCP refuses to start if this list is empty.
+   *
+   * Two kinds of entries:
+   * - Plain username (no "@"): matched against pr.user.login (the PR author's GitHub handle).
+   * - Email address (contains "@"): matched against Co-Authored-By commit headers.
+   *   Use this when a bot like Devin creates the PR on your behalf — your email appears
+   *   in the commit's Co-Authored-By trailer even though the PR author is the bot.
+   *
+   * Example: ["Matovidlo", "martin@company.com"]
+   */
+  allowed_authors: string[];
+  /**
    * GitHub event types to process. Empty array means all supported events are processed.
    *
    * Supported values: push, workflow_run, workflow_job, check_suite, check_run,
@@ -134,6 +147,7 @@ export const DEFAULT_CONFIG: Config = {
     main_branches: ["main", "master"],
   },
   webhooks: {
+    allowed_authors: [],
     allowed_events: [],
     allowed_repos: [],
   },

@@ -214,10 +214,17 @@ log(`MCP HTTP server listening on http://127.0.0.1:${MCP_PORT}/mcp`);
 
 // ── Webhook server ────────────────────────────────────────────────────────────
 
-const { configPath } = (() => {
+const { configPath, authors } = (() => {
   const configIdx = process.argv.indexOf("--config");
+  const cliAuthors: string[] = [];
+  for (let i = 0; i < process.argv.length; i++) {
+    if (process.argv[i] === "--author" && process.argv[i + 1]) {
+      cliAuthors.push(process.argv[i + 1] ?? "");
+    }
+  }
   return {
     configPath: configIdx !== -1 ? (process.argv[configIdx + 1] ?? null) : null,
+    authors: cliAuthors,
   };
 })();
 
@@ -230,6 +237,24 @@ if (configPath) {
     log(`ERROR: Failed to load config: ${err}`);
     process.exit(1);
   }
+}
+
+if (authors.length > 0) {
+  config.webhooks.allowed_authors = [...new Set([...config.webhooks.allowed_authors, ...authors])];
+}
+
+if (config.webhooks.allowed_authors.length === 0) {
+  log(
+    "ERROR: webhooks.allowed_authors is required and must not be empty.",
+    "\nAdd your GitHub username (and optionally your email for co-author matching via bots like Devin).",
+    "\nExample config.yaml:",
+    "\n  webhooks:",
+    "\n    allowed_authors:",
+    "\n      - YourGitHubUsername",
+    "\n      - you@company.com  # for Co-Authored-By matching",
+    "\nOr pass directly: claude-beacon-mux --author YourGitHubUsername",
+  );
+  process.exit(1);
 }
 
 try {

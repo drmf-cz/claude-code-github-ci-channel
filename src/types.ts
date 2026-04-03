@@ -101,6 +101,7 @@ export interface GitHubIssue {
   number: number;
   title: string;
   html_url: string;
+  user: { login: string };
   pull_request?: { url: string };
 }
 
