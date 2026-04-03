@@ -69,7 +69,11 @@ const routeToSessions: NotifyFn = async (
     }
   }
   if (sent === 0) {
-    log(`No session matched ${routing.repo}@${routing.branch ?? "*"} — notification dropped`);
+    const registered = [...sessions.values()].map((s) => `${s.repo ?? "*"}@${s.branch ?? "*"}`);
+    log(
+      `No session matched ${routing.repo}@${routing.branch ?? "*"} — notification dropped.`,
+      `Registered filters: [${registered.join(", ") || "none — call set_filter first"}]`,
+    );
   } else {
     log(`Pushed to ${sent} session(s): ${routing.repo}@${routing.branch ?? "*"}`);
   }
@@ -146,6 +150,11 @@ const MCP_PORT = Number(process.env.MCP_PORT ?? 9444);
 Bun.serve({
   port: MCP_PORT,
   hostname: "127.0.0.1", // local-only — not exposed to the internet
+  // MCP Streamable HTTP keeps a persistent SSE connection open between events.
+  // Bun's default 10-second idle timeout kills that connection silently —
+  // onsessionclosed is NOT called, the session stays registered, but
+  // subsequent notifications are dropped. Disable the timeout entirely.
+  idleTimeout: 0,
   async fetch(req) {
     const url = new URL(req.url);
 
