@@ -32,6 +32,14 @@ export type NotifyFn = (notification: CINotification, routing: RoutingKey) => Pr
 // ── Configuration ─────────────────────────────────────────────────────────────
 const MAX_LOG_CHARS = 8000;
 
+/** Event types that carry PR review / comment payloads. Used in routing and dispatch. */
+const REVIEW_EVENTS = new Set([
+  "pull_request_review",
+  "pull_request_review_comment",
+  "pull_request_review_thread",
+  "issue_comment",
+]);
+
 // ── Security ──────────────────────────────────────────────────────────────────
 const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB — PR review payloads with diff context can exceed 100 KB
 /** Returns true if the raw body exceeds the allowed limit. */
@@ -464,17 +472,21 @@ export function parsePullRequestEvent(
 
 // ── Push → PR Behind Detection ────────────────────────────────────────────────
 
+function githubApiHeaders(token: string): Record<string, string> {
+  return {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+}
+
 async function fetchPRMergeableState(
   repo: string,
   prNumber: number,
   token: string,
 ): Promise<MergeableState> {
   const resp = await fetchWithTimeout(`https://api.github.com/repos/${repo}/pulls/${prNumber}`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
+    headers: githubApiHeaders(token),
   });
   if (!resp.ok) return "unknown";
   const pr = (await resp.json()) as { mergeable_state: MergeableState };
@@ -501,13 +513,7 @@ export async function checkPRsAfterPush(
 
   const resp = await fetchWithTimeout(
     `https://api.github.com/repos/${repo}/pulls?state=open&base=${baseBranch}&per_page=20`,
-    {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-      },
-    },
+    { headers: githubApiHeaders(token) },
     15_000,
   );
 
@@ -777,13 +783,7 @@ export function extractEventRouting(event: string, payload: GitHubWebhookPayload
     return { repo, branch: payload.workflow_run?.head_branch ?? null };
   }
 
-  if (
-    event === "pull_request" ||
-    event === "pull_request_review" ||
-    event === "pull_request_review_comment" ||
-    event === "pull_request_review_thread" ||
-    event === "issue_comment"
-  ) {
+  if (event === "pull_request" || REVIEW_EVENTS.has(event)) {
     return { repo, branch: payload.pull_request?.head.ref ?? null };
   }
 
@@ -893,12 +893,7 @@ export function startWebhookServer(
       }
 
       // ── PR Review / Comment events (debounced) ──────────────────────────────
-      if (
-        event === "pull_request_review" ||
-        event === "pull_request_review_comment" ||
-        event === "pull_request_review_thread" ||
-        event === "issue_comment"
-      ) {
+      if (REVIEW_EVENTS.has(event)) {
         const parsed = parseReviewWebhookPayload(event, payload.action, payload);
         if (parsed) {
           const { reviewEvent, prMeta } = parsed;
@@ -944,7 +939,8 @@ export function startWebhookServer(
           : parseWorkflowEvent(event, payload, config);
 
       if (!notification) {
-        return new Response("Unparseable", { status: 200 });
+        // Actionable event type but no notification produced (e.g. success filtered out)
+        return new Response("OK", { status: 200 });
       }
 
       const routing = extractEventRouting(event, payload);

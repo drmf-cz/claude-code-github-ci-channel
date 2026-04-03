@@ -389,6 +389,9 @@ These control what Claude is asked to do when an event fires. Each field accepts
 | `behavior.on_pr_review.instruction` | PR review / comment events (after debounce) | `require_plan`, `skill` |
 | `behavior.on_merge_conflict.instruction` | PR with `mergeable_state: dirty` | — |
 | `behavior.on_branch_behind.instruction` | PR with `mergeable_state: behind` | — |
+| `behavior.code_style` | any PR review event | — |
+
+`code_style` is a free-form string prepended to every PR review notification. Describe your project's coding conventions here so Claude applies them consistently when addressing comments.
 
 **`on_pr_review` sub-fields:**
 
@@ -396,17 +399,6 @@ These control what Claude is asked to do when an event fires. Each field accepts
 |---|---|---|---|
 | `behavior.on_pr_review.require_plan` | boolean | `true` | Whether Claude must enter plan mode before touching code |
 | `behavior.on_pr_review.skill` | string | `"pr-comment-response"` | Skill name invoked to handle the review |
-
-**Code style context:**
-
-```yaml
-behavior:
-  code_style: |
-    - Use TypeScript strict mode; never cast to `any`
-    - Prefer `const` over `let`; avoid mutation
-```
-
-The `code_style` string is prepended to every PR review notification so Claude applies consistent standards when addressing comments.
 
 ### Template placeholders
 
@@ -433,11 +425,10 @@ webhooks:
 
 behavior:
   code_style: |
-    - Go 1.23+; run gofmt before committing
-    - All exported symbols must have godoc comments
+    # describe your project's coding conventions here —
+    # prepended to every PR review notification
   on_pr_review:
     require_plan: true
-    skill: pr-comment-response
 ```
 
 ### Migrating from environment variables
