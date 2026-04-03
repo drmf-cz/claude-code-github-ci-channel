@@ -425,10 +425,11 @@ webhooks:
 
 behavior:
   code_style: |
-    # describe your project's coding conventions here —
-    # prepended to every PR review notification
+    - Use TypeScript strict mode; never cast to `any`
+    - Run linter before committing
   on_pr_review:
     require_plan: true
+    skill: pr-comment-response
 ```
 
 ### Migrating from environment variables
