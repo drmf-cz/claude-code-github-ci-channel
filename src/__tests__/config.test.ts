@@ -45,11 +45,16 @@ describe("DEFAULT_CONFIG", () => {
     expect(DEFAULT_CONFIG.behavior.on_pr_review.require_plan).toBe(true);
   });
 
-  it("has non-empty instruction for every behavior", () => {
-    for (const key of Object.keys(
-      DEFAULT_CONFIG.behavior,
-    ) as (keyof typeof DEFAULT_CONFIG.behavior)[]) {
-      expect(DEFAULT_CONFIG.behavior[key].instruction.length).toBeGreaterThan(0);
+  it("has non-empty instruction for every behavior hook", () => {
+    const hooks = [
+      DEFAULT_CONFIG.behavior.on_ci_failure_main,
+      DEFAULT_CONFIG.behavior.on_ci_failure_branch,
+      DEFAULT_CONFIG.behavior.on_pr_review,
+      DEFAULT_CONFIG.behavior.on_merge_conflict,
+      DEFAULT_CONFIG.behavior.on_branch_behind,
+    ];
+    for (const hook of hooks) {
+      expect(hook.instruction.length).toBeGreaterThan(0);
     }
   });
 });

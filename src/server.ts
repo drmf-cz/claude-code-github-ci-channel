@@ -2,7 +2,12 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { Config } from "./config.js";
-import { DEFAULT_CONFIG, interpolate } from "./config.js";
+import {
+  buildWorktreePreamble,
+  buildWorktreeRebaseSteps,
+  DEFAULT_CONFIG,
+  interpolate,
+} from "./config.js";
 import type {
   CINotification,
   GitHubPushPayload,
@@ -207,7 +212,10 @@ export function buildReviewNotification(
   }
 
   const behavior = config.behavior.on_pr_review;
-  const instruction = interpolate(behavior.instruction, { skill: behavior.skill });
+  const instruction = interpolate(behavior.instruction, {
+    skill: behavior.skill,
+    worktree_preamble: buildWorktreePreamble(behavior.use_worktree),
+  });
   lines.push("", ...instruction.split("\n"));
 
   return {
@@ -431,8 +439,14 @@ export function parsePullRequestEvent(
     sender: payload.sender?.login ?? "",
   };
 
+  const worktreeMode = config.behavior.worktrees.mode;
+
   if (state === "dirty") {
-    const instruction = interpolate(config.behavior.on_merge_conflict.instruction, prVars);
+    const worktreeSteps = buildWorktreeRebaseSteps(worktreeMode, prVars, true);
+    const instruction = interpolate(config.behavior.on_merge_conflict.instruction, {
+      ...prVars,
+      worktree_steps: worktreeSteps,
+    });
     return {
       summary: [
         `⚠️ MERGE CONFLICT — PR #${pr.number}: "${pr.title}"`,
@@ -446,7 +460,11 @@ export function parsePullRequestEvent(
   }
 
   if (state === "behind") {
-    const instruction = interpolate(config.behavior.on_branch_behind.instruction, prVars);
+    const worktreeSteps = buildWorktreeRebaseSteps(worktreeMode, prVars, false);
+    const instruction = interpolate(config.behavior.on_branch_behind.instruction, {
+      ...prVars,
+      worktree_steps: worktreeSteps,
+    });
     return {
       summary: [
         `⬇️ BRANCH BEHIND BASE — PR #${pr.number}: "${pr.title}"`,

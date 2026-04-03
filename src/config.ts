@@ -41,6 +41,24 @@ export interface CIFailureBehavior {
   instruction: string;
 }
 
+/**
+ * Controls how git worktrees are created for subagent tasks.
+ *
+ * - "temp": classic shell worktree — `git worktree add /tmp/... && git worktree remove`
+ * - "native": Claude Code's Agent tool with `isolation: "worktree"` — Claude manages the
+ *   worktree lifecycle automatically; no manual add/remove needed.
+ */
+export type WorktreeMode = "temp" | "native";
+
+export interface WorktreeConfig {
+  /**
+   * Worktree strategy used when spawning subagents for rebase / conflict resolution.
+   * Defaults to "temp". Use "native" if you work in Claude Code worktrees natively
+   * (i.e. you run `claude` from inside an Agent-managed worktree).
+   */
+  mode: WorktreeMode;
+}
+
 export interface PRReviewBehavior {
   /**
    * Whether to require the agent to enter plan mode before applying any fixes.
@@ -50,10 +68,18 @@ export interface PRReviewBehavior {
   /** Skill name invoked during the execution phase. */
   skill: string;
   /**
+   * When true, the PR review work runs as a subagent inside an isolated Claude Code
+   * worktree (Agent tool with isolation="worktree") instead of the current session.
+   * Useful when you normally work inside native worktrees.
+   */
+  use_worktree: boolean;
+  /**
    * Instruction text appended to PR review notifications.
    *
-   * Available placeholders: {skill}  (replaced with the skill field above)
-   * PR/reviewer context is already in the notification header — no PR variables needed here.
+   * Available placeholders:
+   *   {skill}             — replaced with the skill field above
+   *   {worktree_preamble} — empty when use_worktree=false; when true, a sentence
+   *                         telling the subagent it already runs in an isolated worktree
    */
   instruction: string;
 }
@@ -62,12 +88,15 @@ export interface PRStateBehavior {
   /**
    * Instruction template for PRs in a conflict or behind state.
    *
-   * Available placeholders: {repo}, {pr_number}, {pr_title}, {pr_url}, {head_branch}, {base_branch}
+   * Available placeholders: {repo}, {pr_number}, {pr_title}, {pr_url}, {head_branch},
+   *   {base_branch}, {worktree_steps} — mode-appropriate rebase/cleanup commands
    */
   instruction: string;
 }
 
 export interface BehaviorConfig {
+  /** Worktree strategy for all subagent operations. */
+  worktrees: WorktreeConfig;
   /** Behaviour when a CI run fails on a main/master branch. */
   on_ci_failure_main: CIFailureBehavior;
   /** Behaviour when a CI run fails on a feature branch. */
@@ -109,6 +138,9 @@ export const DEFAULT_CONFIG: Config = {
     allowed_repos: [],
   },
   behavior: {
+    worktrees: {
+      mode: "temp",
+    },
     on_ci_failure_main: {
       instruction: [
         "Main branch is broken. Act immediately — no confirmation needed.",
@@ -134,8 +166,9 @@ export const DEFAULT_CONFIG: Config = {
     on_pr_review: {
       require_plan: true,
       skill: "pr-comment-response",
+      use_worktree: false,
       instruction: [
-        "MANDATORY: Enter plan mode first.",
+        "{worktree_preamble}MANDATORY: Enter plan mode first.",
         "1. Read every linked thread and summarise what each one asks for",
         "2. Draft a plan listing the file + change for each thread",
         "3. Only after the plan is complete, use the {skill} skill to execute",
@@ -144,7 +177,7 @@ export const DEFAULT_CONFIG: Config = {
         "",
         "Execution phase:",
         "1. For each comment thread above, open the link and read full context",
-        "2. Code comments: apply the fix in a worktree, commit",
+        "2. Code comments: apply the fix, commit",
         "3. Questions / style: reply inline with a concise explanation",
         "4. Use gh-pr-reply.sh --batch to post all replies in one shot",
       ].join("\n"),
@@ -155,11 +188,7 @@ export const DEFAULT_CONFIG: Config = {
         "",
         "Use the Agent tool NOW to spawn a subagent with these instructions:",
         "Resolve merge conflicts for PR #{pr_number} in {repo}:",
-        "1. git worktree add /tmp/pr-{pr_number}-rebase {head_branch}",
-        "2. cd /tmp/pr-{pr_number}-rebase && git fetch origin",
-        "3. git rebase origin/{base_branch} -- fix conflicts, then: git add -A && git rebase --continue",
-        "4. git push --force-with-lease origin {head_branch}",
-        "5. git worktree remove /tmp/pr-{pr_number}-rebase",
+        "{worktree_steps}",
       ].join("\n"),
     },
     on_branch_behind: {
@@ -168,16 +197,65 @@ export const DEFAULT_CONFIG: Config = {
         "",
         "Use the Agent tool NOW to spawn a subagent with these instructions:",
         "Rebase PR #{pr_number} in {repo}:",
-        "1. git worktree add /tmp/pr-{pr_number}-rebase {head_branch}",
-        "2. cd /tmp/pr-{pr_number}-rebase && git fetch origin",
-        "3. git rebase origin/{base_branch}",
-        "4. git push --force-with-lease origin {head_branch}",
-        "5. git worktree remove /tmp/pr-{pr_number}-rebase",
+        "{worktree_steps}",
       ].join("\n"),
     },
   },
   code_style: "",
 };
+
+// ── Worktree Step Builders ────────────────────────────────────────────────────
+
+/**
+ * Build the mode-appropriate steps for a rebase subagent.
+ * The returned string replaces the {worktree_steps} placeholder in on_merge_conflict
+ * and on_branch_behind instruction templates.
+ */
+export function buildWorktreeRebaseSteps(
+  mode: WorktreeMode,
+  vars: { pr_number: string; head_branch: string; base_branch: string },
+  withConflicts: boolean,
+): string {
+  const { pr_number, head_branch, base_branch } = vars;
+
+  if (mode === "native") {
+    // Claude Code's Agent tool manages the worktree automatically when isolation="worktree"
+    // is passed. The subagent starts directly inside the isolated worktree branch.
+    const rebaseStep = withConflicts
+      ? `2. git fetch origin && git rebase origin/${base_branch} — fix conflicts, then: git add -A && git rebase --continue`
+      : `2. git fetch origin && git rebase origin/${base_branch}`;
+    return [
+      `Use the Agent tool with isolation="worktree" and these instructions for branch ${head_branch}:`,
+      `1. You are already in an isolated worktree on branch ${head_branch}`,
+      rebaseStep,
+      `3. git push --force-with-lease origin ${head_branch}`,
+    ].join("\n");
+  }
+
+  // Default: temp worktree via shell commands
+  const rebaseStep = withConflicts
+    ? `3. git rebase origin/${base_branch} — fix conflicts, then: git add -A && git rebase --continue`
+    : `3. git rebase origin/${base_branch}`;
+  return [
+    `1. git worktree add /tmp/pr-${pr_number}-rebase ${head_branch}`,
+    `2. cd /tmp/pr-${pr_number}-rebase && git fetch origin`,
+    rebaseStep,
+    `4. git push --force-with-lease origin ${head_branch}`,
+    `5. git worktree remove /tmp/pr-${pr_number}-rebase`,
+  ].join("\n");
+}
+
+/**
+ * Build the {worktree_preamble} for on_pr_review instructions.
+ * Empty string when use_worktree=false; a directive sentence when true.
+ */
+export function buildWorktreePreamble(useWorktree: boolean): string {
+  if (!useWorktree) return "";
+  return (
+    'You are running inside an isolated Claude Code worktree (isolation="worktree"). ' +
+    "All file edits and commits apply directly to this worktree — no separate setup needed.\n\n"
+  );
+}
 
 // ── Template Interpolation ────────────────────────────────────────────────────
 

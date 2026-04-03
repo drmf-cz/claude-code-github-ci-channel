@@ -60,6 +60,23 @@ webhooks:
 # by using names that don't appear in the variable list for that event.
 behavior:
 
+  # ── Worktree mode ────────────────────────────────────────────────────────────
+  # Controls how subagents handle rebase / conflict resolution and PR review work.
+  #
+  #   mode: temp    (default)
+  #     Subagents use classic shell commands:
+  #       git worktree add /tmp/pr-<N>-rebase <branch>
+  #       ... do work ...
+  #       git worktree remove /tmp/pr-<N>-rebase
+  #
+  #   mode: native
+  #     Subagents are spawned via Claude Code's Agent tool with isolation="worktree".
+  #     Claude manages the worktree lifecycle automatically — no add/remove commands.
+  #     Use this if you normally work inside Claude Code native worktrees.
+  worktrees:
+    mode: temp
+  # mode: native  ← uncomment if you use Claude Code native worktrees
+
   # Triggered when a workflow_run fails on a main/master branch.
   # Placeholders: {repo}, {branch}, {run_url}, {workflow}, {status}, {commit}
   on_ci_failure_main:
@@ -85,7 +102,9 @@ behavior:
       3. Push the fix to the branch.
 
   # Triggered when a PR review, inline comment, or unresolved thread arrives.
-  # Placeholder in instruction: {skill}  (replaced with the skill field below)
+  # Placeholders in instruction: {skill}, {worktree_preamble}
+  #   {skill}             — replaced with the skill field below
+  #   {worktree_preamble} — injected automatically based on use_worktree (see below)
   on_pr_review:
     # When true, the instruction must direct the agent to enter plan mode
     # before making any code changes. Strongly recommended.
@@ -94,8 +113,13 @@ behavior:
     # Skill invoked during the execution phase.
     skill: pr-comment-response
 
+    # When true, the PR review work runs as a subagent inside a native Claude Code
+    # worktree (Agent tool with isolation="worktree"). Set to true if you normally
+    # work in Claude Code native worktrees so reviews apply to an isolated copy.
+    use_worktree: false
+
     instruction: |
-      MANDATORY: Enter plan mode first.
+      {worktree_preamble}MANDATORY: Enter plan mode first.
       1. Read every linked thread and summarise what each one asks for
       2. Draft a plan listing the file + change for each thread
       3. Only after the plan is complete, use the {skill} skill to execute
@@ -104,37 +128,33 @@ behavior:
 
       Execution phase:
       1. For each comment thread above, open the link and read full context
-      2. Code comments: apply the fix in a worktree, commit
+      2. Code comments: apply the fix, commit
       3. Questions / style: reply inline with a concise explanation
       4. Use gh-pr-reply.sh --batch to post all replies in one shot
 
   # Triggered when a PR has merge conflicts (mergeable_state=dirty).
-  # Placeholders: {repo}, {pr_number}, {pr_title}, {pr_url}, {head_branch}, {base_branch}
+  # Placeholders: {repo}, {pr_number}, {pr_title}, {pr_url}, {head_branch},
+  #               {base_branch}, {worktree_steps}
+  # {worktree_steps} is generated automatically from behavior.worktrees.mode.
   on_merge_conflict:
     instruction: |
       PR #{pr_number} has merge conflicts with {base_branch}. Act immediately — no confirmation needed.
 
       Use the Agent tool NOW to spawn a subagent with these instructions:
       Resolve merge conflicts for PR #{pr_number} in {repo}:
-      1. git worktree add /tmp/pr-{pr_number}-rebase {head_branch}
-      2. cd /tmp/pr-{pr_number}-rebase && git fetch origin
-      3. git rebase origin/{base_branch} -- fix conflicts, then: git add -A && git rebase --continue
-      4. git push --force-with-lease origin {head_branch}
-      5. git worktree remove /tmp/pr-{pr_number}-rebase
+      {worktree_steps}
 
   # Triggered when a PR is behind its base branch (mergeable_state=behind).
-  # Placeholders: {repo}, {pr_number}, {pr_title}, {pr_url}, {head_branch}, {base_branch}
+  # Placeholders: {repo}, {pr_number}, {pr_title}, {pr_url}, {head_branch},
+  #               {base_branch}, {worktree_steps}
+  # {worktree_steps} is generated automatically from behavior.worktrees.mode.
   on_branch_behind:
     instruction: |
       PR #{pr_number} is behind {base_branch} (no conflicts). Act immediately — no confirmation needed.
 
       Use the Agent tool NOW to spawn a subagent with these instructions:
       Rebase PR #{pr_number} in {repo}:
-      1. git worktree add /tmp/pr-{pr_number}-rebase {head_branch}
-      2. cd /tmp/pr-{pr_number}-rebase && git fetch origin
-      3. git rebase origin/{base_branch}
-      4. git push --force-with-lease origin {head_branch}
-      5. git worktree remove /tmp/pr-{pr_number}-rebase
+      {worktree_steps}
 
 # ── Code style guidelines ─────────────────────────────────────────────────────
 # Free-text block prepended to every PR review notification.
