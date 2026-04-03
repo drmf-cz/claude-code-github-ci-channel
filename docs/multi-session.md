@@ -46,11 +46,15 @@ the mux. You never need to pass secrets on the command line.
 ### 2. Start the mux
 
 ```bash
-# From the repo root (Bun loads .env automatically)
-bun run start:mux
+# After global install (recommended) — reads .env from current directory
+github-ci-mux
+github-ci-mux --config /path/to/my-config.yaml   # with optional YAML config
 
-# Or with an optional YAML config file for behaviour customisation:
-bun run src/mux.ts --config /path/to/my-config.yaml
+# Or via bunx (no install needed — always uses latest published version)
+bunx -p claude-code-github-ci-channel github-ci-mux
+
+# Or from a cloned repo
+bun run start:mux
 ```
 
 You should see:

@@ -1,6 +1,7 @@
 # claude-code-github-ci-channel
 
 [![CI](https://github.com/drmf-cz/claude-code-github-ci-channel/actions/workflows/ci.yml/badge.svg)](https://github.com/drmf-cz/claude-code-github-ci-channel/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/claude-code-github-ci-channel.svg)](https://www.npmjs.com/package/claude-code-github-ci-channel)
 
 > MCP channel plugin that pushes GitHub Actions CI/CD results and PR merge status directly into running Claude Code sessions — triggering automatic investigation and remediation.
 
@@ -53,18 +54,47 @@ The MCP server is started automatically by Claude Code as a subprocess — you n
 
 ## Requirements
 
-- [Bun](https://bun.sh) ≥ 1.1.0
+- [Bun](https://bun.sh) ≥ 1.1.0 — the package runs on Bun; `npx` will not work
 - Claude Code ≥ 2.1.80
 - [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) (or ngrok)
 - GitHub PAT — fine-grained: **Actions: Read** + **Pull requests: Read** | classic: `public_repo`
 
 > `GITHUB_TOKEN` is required for two features: `fetch_workflow_logs` (log fetching) and `checkPRsAfterPush` (listing open PRs after a push). Without it, those features silently no-op.
 
+## Installation
+
+No cloning required. Install once with Bun:
+
+```bash
+bun add -g claude-code-github-ci-channel
+```
+
+This puts two binaries in `~/.bun/bin/`:
+
+| Binary | Purpose |
+|---|---|
+| `github-ci` | Standalone MCP server — spawned as subprocess by Claude Code (single session) |
+| `github-ci-mux` | Mux server — run once, connects all Claude Code sessions via HTTP |
+
+To update to a newer version: `bun add -g claude-code-github-ci-channel@latest`
+
+> **No global install?** You can also run directly with `bunx`:
+> ```bash
+> bunx claude-code-github-ci-channel        # standalone (github-ci)
+> bunx -p claude-code-github-ci-channel github-ci-mux   # mux
+> ```
+
 ## Setup (Option A — Webhook + Tunnel)
 
 Real-time. Supports all event types including `workflow_job`, `check_suite`, and PR status.
 
 ### 1. Install
+
+```bash
+bun add -g claude-code-github-ci-channel
+```
+
+Or clone if you want to hack on the source:
 
 ```bash
 git clone https://github.com/drmf-cz/claude-code-github-ci-channel
@@ -109,16 +139,16 @@ For a stable URL: [Cloudflare named tunnels](https://developers.cloudflare.com/c
 
 ### 5. Configure `.mcp.json`
 
-Create or edit `~/.mcp.json` (all projects) or `.mcp.json` in your project root:
+Create or edit `~/.mcp.json` (all projects) or `.mcp.json` in your project root.
+
+**After global install** (`bun add -g`):
 
 ```json
 {
   "mcpServers": {
     "github-ci": {
-      "command": "/home/you/.bun/bin/bun",
-      "args": ["run", "/path/to/claude-code-github-ci-channel/src/index.ts"],
+      "command": "/home/you/.bun/bin/github-ci",
       "env": {
-        "WEBHOOK_PORT": "9443",
         "GITHUB_WEBHOOK_SECRET": "your-secret-from-step-2",
         "GITHUB_TOKEN": "your-pat"
       }
@@ -127,10 +157,26 @@ Create or edit `~/.mcp.json` (all projects) or `.mcp.json` in your project root:
 }
 ```
 
-**Notes:**
-- Use the **absolute path** to `bun` (`which bun`). Claude Code spawns subprocesses without your shell PATH.
-- The `env` block here is the only config you need — no `.env` file required. Claude Code injects these directly into the subprocess.
-- A `.env` file in the repo directory is loaded by Bun for manual runs only. `.mcp.json` values always take precedence.
+Replace `/home/you` with your home directory (`echo $HOME`). Bun installs globals to `~/.bun/bin/`.
+
+**If you cloned the repo** (or prefer `bunx` for always-latest):
+
+```json
+{
+  "mcpServers": {
+    "github-ci": {
+      "command": "/home/you/.bun/bin/bunx",
+      "args": ["claude-code-github-ci-channel"],
+      "env": {
+        "GITHUB_WEBHOOK_SECRET": "your-secret-from-step-2",
+        "GITHUB_TOKEN": "your-pat"
+      }
+    }
+  }
+}
+```
+
+> Claude Code spawns MCP subprocesses without your shell PATH, so always use absolute paths to binaries. Find them with `which github-ci` or `which bunx`.
 
 ### 6. Start Claude Code
 
@@ -221,8 +267,15 @@ cp .env.example .env
 **2. Start the mux once** (tmux pane, background terminal, or [systemd unit](docs/multi-session.md#running-as-a-systemd-unit)):
 
 ```bash
-bun run start:mux                              # Bun loads .env automatically
-bun run src/mux.ts --config my-config.yaml    # optional YAML config
+# After global install (recommended)
+github-ci-mux                            # reads .env from current directory
+github-ci-mux --config my-config.yaml   # optional YAML config
+
+# Or via bunx (no install)
+bunx -p claude-code-github-ci-channel github-ci-mux
+
+# Or from cloned repo
+bun run start:mux
 ```
 
 **3. Register the mux in Claude Code** (run once — applies to all projects):
