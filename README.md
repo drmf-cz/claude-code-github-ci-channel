@@ -82,8 +82,8 @@ To update to a newer version: `bun add -g claude-beacon@latest`
 
 > **No global install?** You can also run directly with `bunx`:
 > ```bash
-> bunx claude-beacon                    # standalone
-> bunx -p claude-beacon claude-beacon-mux   # mux
+> bunx claude-beacon --author YourGitHubUsername                    # standalone
+> bunx -p claude-beacon claude-beacon-mux --author YourGitHubUsername   # mux
 > ```
 
 ## Setup (Option A — Webhook + Tunnel)
@@ -273,14 +273,14 @@ cp .env.example .env
 
 ```bash
 # After global install (recommended)
-claude-beacon-mux                            # reads .env from current directory
-claude-beacon-mux --config my-config.yaml   # optional YAML config
+claude-beacon-mux --author YourGitHubUsername
+claude-beacon-mux --author YourGitHubUsername --config my-config.yaml   # optional YAML config
 
 # Or via bunx (no install)
-bunx -p claude-beacon claude-beacon-mux
+bunx -p claude-beacon claude-beacon-mux --author YourGitHubUsername
 
 # Or from cloned repo
-bun run start:mux
+bun run start:mux --author YourGitHubUsername
 ```
 
 **3. Register the mux in Claude Code** (run once — applies to all projects):
