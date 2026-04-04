@@ -25,6 +25,21 @@ This registers the session with the running mux server so CI/PR notifications ar
 
 Call `set_filter` again after checking out a different branch or entering/leaving a worktree.
 
+## CI failure response — REQUIRED order of operations
+
+When a CI failure notification arrives for a feature branch, **always rebase before diagnosing or fixing**, no matter how obvious the failure looks. Skipping the rebase when the fix seems clear is the #1 cause of stale-base bugs and follow-on version conflicts.
+
+```
+MANDATORY steps — do not skip any:
+1. git fetch origin && git rebase origin/main
+   - If conflicts: resolve them, git add, git rebase --continue, push
+   - If already up to date: proceed to step 2
+2. ONLY THEN read the failure / apply the fix
+3. Push the fix
+```
+
+This applies even for trivially obvious failures (version bump check, lint, etc.) — the branch may be behind main in ways that affect the fix or introduce new conflicts after pushing.
+
 ## Skills available in this repo
 
 Two skills are defined in `.claude/commands/`. Use them — do not replicate their logic inline.
