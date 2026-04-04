@@ -8,6 +8,23 @@ This file is the authoritative guide for AI agents (Claude Code) working in this
 
 It is **not** a general web server. Every design decision optimises for: minimal attack surface, zero accidental data leaks, and notifications that Claude can act on autonomously.
 
+## Skills available in this repo
+
+Two skills are defined in `.claude/commands/`. Use them — do not replicate their logic inline.
+
+**`security-review`** — Use this skill whenever:
+- You are about to push or merge changes that touch any file in `src/`
+- You are asked to review a PR
+- You are asked to check security
+- You have just written new code and want to verify it is safe
+
+**`review-pr`** — Use this skill whenever:
+- You are asked to review a PR or check if something is ready to merge
+- You have finished implementing a feature and want to self-review before pushing
+- Someone asks "is this ready?" or "can we merge?"
+
+The `review-pr` skill calls `security-review` internally for `src/` changes — you do not need to run both manually.
+
 ## Repository structure
 
 ```
@@ -28,10 +45,12 @@ docs/
 ├── multi-session.md         # Mux server setup guide
 └── worktree-integration.md  # Native worktree mode guide
 
-.claude/
-└── commands/                # Claude skills for contributors
-    ├── review-pr.md
-    └── security-audit.md
+.claude/commands/
+├── security-review.md  # Security audit skill
+└── review-pr.md        # Full PR review skill
+
+.github/
+└── PULL_REQUEST_TEMPLATE.md  # PR checklist (mirrors merge checklist below)
 ```
 
 ## Development workflow — ALWAYS follow this
@@ -43,7 +62,7 @@ docs/
 git checkout -b feat/your-feature   # or fix/..., docs/..., refactor/...
 
 # 2. Open a draft PR immediately (before writing code)
-gh pr create --draft --title "feat: short description" --body "## What\n\n## Why"
+gh pr create --draft --title "feat: short description" --body "$(cat .github/PULL_REQUEST_TEMPLATE.md)"
 
 # 3. Work on the branch, push often
 git push -u origin feat/your-feature
@@ -65,52 +84,30 @@ bun run build       # Bundle must succeed
 
 CI enforces all four. A failing CI on any non-draft PR blocks merge.
 
-## Security-first review approach
+## Security standards
 
-Security review is **mandatory** on every PR that touches `src/`. Review in this order:
+Security review is **mandatory** on every PR that touches `src/`. Use the `security-review` skill — it covers the full checklist. The five areas it checks:
 
-### 1. Input boundaries (highest priority)
+1. **Input boundaries** — all webhook payload fields embedded in notifications must pass through `sanitizeBody()`
+2. **Authentication paths** — `verifySignature()` must be the first gate, before any JSON parsing
+3. **Token handling** — `GITHUB_TOKEN` must only be sent to `api.github.com`; use `redirect: "manual"` on GitHub redirects
+4. **Information leaks** — no full tokens in logs, no raw request content in error responses
+5. **Replay and DoS** — `isOversized()` before JSON parse, `isDuplicateDelivery()` before processing
 
-- All data entering from webhook payloads must pass through `sanitizeBody()` before being embedded in notifications.
-- Fields that reach Claude's context: `pr.title`, `pr.head.ref`, `pr.base.ref`, `workflow.name`, `job.name`, commit messages, reviewer comments.
-- Any new field embedded in a notification must be sanitised.
-
-### 2. Authentication paths
-
-- `verifySignature()` must be the first gate — called before any payload parsing.
-- `WEBHOOK_DEV_MODE` must only bypass verification in test environments, never production.
-- Token handling: `GITHUB_TOKEN` must only be sent to `api.github.com`. Check any new `fetch()` call for redirect handling.
-
-### 3. Information leaks
-
-- The `/health` endpoint must return only `{"status":"ok","server":"claude-beacon"}`.
-- No secrets, tokens, or user data in logs beyond the 8-char token prefix already in place.
-- Error responses must not echo back request content.
-
-### 4. Prompt injection
-
-- Any new GitHub field embedded in `CINotification.content` or `ReviewNotification` is a potential injection vector.
-- Sanitise: strip null bytes, Unicode bidi-override characters (U+200B–U+202E, U+2066–U+2069), and truncate to `MAX_BODY_CHARS`.
-- Reference `sanitizeBody()` in `src/server.ts` for the current implementation.
-
-### 5. Replay and DoS
-
-- All webhook events must be checked with `isDuplicateDelivery()` before processing.
-- Payload size checked with `isOversized()` before parsing JSON.
+See `docs/ARCHITECTURE.md` for the rationale behind each guard.
 
 ## TypeScript standards
 
-- **Zero `any`** — enforced by Biome `noExplicitAny: error`.
-- All function parameters and return types must be explicit.
-- Use discriminated unions (e.g. `MergeableState`) — do not use `string` for fields with known values.
-- `tsconfig.json` is maximally strict (`strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noImplicitOverride`) — do not relax any flag.
+- **Zero `any`** — enforced by Biome `noExplicitAny: error`
+- All function parameters and return types must be explicit
+- Use discriminated unions (e.g. `MergeableState`) — do not use `string` for fields with known values
+- `tsconfig.json` is maximally strict (`strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noImplicitOverride`) — do not relax any flag
 
 ## Testing standards
 
-- Every new exported function must have unit tests.
-- Security-critical functions (`verifySignature`, `sanitizeBody`, `isDuplicateDelivery`, `isOversized`) require tests for both the happy path and the failure/edge-case path.
-- New event parse functions must test: successful parse, unknown/skipped events, and sanitisation of user-controlled fields.
-- Target: keep test count growing. The current count is shown in `AGENTS.md` — update it when you add tests.
+- Every new exported function must have unit tests
+- Security-critical functions (`verifySignature`, `sanitizeBody`, `isDuplicateDelivery`, `isOversized`) require tests for both the happy path and the failure/edge-case path
+- New event parse functions must test: successful parse, skipped events, and sanitisation of user-controlled fields
 
 ## Commit message format
 
@@ -118,15 +115,11 @@ Security review is **mandatory** on every PR that touches `src/`. Review in this
 <type>: <imperative short description>
 
 # Types: feat, fix, docs, refactor, test, ci, chore
-# Examples:
-feat: add support for check_run events
-fix: sanitise workflow name before embedding in notification
-docs: document prompt injection mitigations
 ```
 
 ## Versioning
 
-Every merged PR **must** bump `package.json` version (enforced by CI). Use semantic versioning:
+Every merged PR **must** bump `package.json` version (enforced by CI):
 - `patch` (1.1.x): bug fixes, docs, tests, refactors with no behaviour change
 - `minor` (1.x.0): new features, new config options
 - `major` (x.0.0): breaking config changes, removed fields
@@ -135,11 +128,14 @@ Update `CHANGELOG.md` with every version bump.
 
 ## Merge checklist
 
-Before marking a PR ready:
+Before marking a PR ready, use the `review-pr` skill. It runs all checks automatically. The checklist it verifies:
+
 - [ ] `bun test` passes
 - [ ] `bun run typecheck` passes
 - [ ] `bun run lint` passes
+- [ ] `bun run build` passes
+- [ ] Security review passed (for `src/` changes)
 - [ ] Version bumped in `package.json`
-- [ ] `CHANGELOG.md` updated
-- [ ] Security review done (see above) for any `src/` changes
-- [ ] New config fields documented in both `README.md` and `config.example.yaml`
+- [ ] `CHANGELOG.md` updated with today's date and correct version
+- [ ] New config fields documented in `README.md` and `config.example.yaml`
+- [ ] New event types documented in `README.md` and `AGENTS.md`

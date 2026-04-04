@@ -1,69 +1,94 @@
-# Review PR — claude-beacon
+---
+description: Review a PR in this repo for correctness, security, and project standards compliance. Use this when asked to review a PR, check if code is ready to merge, or validate changes before pushing. Runs security audit, typecheck, tests, lint, and verifies docs and version bump.
+allowed-tools: Grep Glob Read Bash
+---
 
-Review the current PR for correctness, security, and compliance with project standards.
+You are reviewing a pull request in `claude-beacon`. Work through each step in order. Security comes first — do not skip it even for docs-only PRs.
 
-## Steps
+Start by identifying what changed:
 
-### 1. Security review first
+```bash
+git diff main...HEAD --name-only
+git log --oneline main..HEAD
+```
 
-Run the `/security-review` skill on the changed files. This is mandatory for any PR touching `src/`.
+## Step 1 — Security review (mandatory for any src/ change)
 
-### 2. TypeScript correctness
+Use the `security-review` skill now. If any `src/` file appears in the diff, this step is non-negotiable.
+
+If the diff contains only docs, config, or test files with no new payload field accesses, note "security review skipped — no src/ changes" and move on.
+
+## Step 2 — TypeScript correctness
 
 ```bash
 bun run typecheck
 ```
 
-Zero errors required. Report any new `any` casts or type assertions without a justifying comment.
+- Zero errors required.
+- Flag any new explicit `any` cast or `as SomeType` assertion that lacks a comment explaining why it is safe.
 
-### 3. Test coverage
-
-For every new exported function in the diff:
-- Is there a corresponding test in `src/__tests__/`?
-- Does the test cover the happy path AND at least one error/edge-case path?
-- For security-critical functions (`verifySignature`, `sanitizeBody`, `isDuplicateDelivery`, `isOversized`): are both success and failure paths tested?
+## Step 3 — Tests
 
 ```bash
 bun test
 ```
 
-All tests must pass.
+All tests must pass. Then check coverage for new code:
 
-### 4. Linting
+```bash
+git diff main...HEAD -- src/ | grep "^+export function\|^+export async function"
+```
+
+For every new exported function in the diff:
+- Is there a test in `src/__tests__/`?
+- Does it cover both the happy path and at least one error/edge-case?
+- For security-critical functions (`verifySignature`, `sanitizeBody`, `isDuplicateDelivery`, `isOversized`): are failure paths tested explicitly?
+
+## Step 4 — Linting
 
 ```bash
 bun run lint
 ```
 
-Zero Biome violations. Auto-fixable issues should be fixed with `bun run lint:fix` before review.
+Zero Biome violations. If violations exist, run `bun run lint:fix` and check whether auto-fix resolved them or they need manual attention.
 
-### 5. Documentation
+## Step 5 — Documentation
 
-- New config fields: documented in both `README.md` (YAML config reference section) and `config.example.yaml`.
-- New event types: documented in `README.md` (events table) and `AGENTS.md` (key exports table).
-- Breaking changes: noted in `CHANGELOG.md` under the correct version.
+```bash
+git diff main...HEAD -- README.md config.example.yaml AGENTS.md CHANGELOG.md
+```
 
-### 6. Version bump
+- New config fields → must appear in both `README.md` YAML config section and `config.example.yaml`.
+- New event types → must appear in `README.md` events table and `AGENTS.md` key exports table.
+- Breaking changes → must be in `CHANGELOG.md` under the correct version with `### Changed` or `### Removed`.
+
+## Step 6 — Version bump
 
 ```bash
 grep '"version"' package.json
-git log --oneline main..HEAD | grep -i "bump\|version"
+git show main:package.json | grep '"version"'
 ```
 
-Every merged PR must increment `package.json` version. Confirm the bump is present.
+The version in the branch must be higher than the version on main. No merge without a bump — CI enforces this but confirm it here.
 
-### 7. CHANGELOG
+## Step 7 — CHANGELOG entry
 
-`CHANGELOG.md` must have an entry for the version being bumped. Check that:
-- The version number matches `package.json`.
-- The entry lists added, changed, and fixed items accurately.
-- The date is today's date in ISO format.
+```bash
+grep -A 10 "## \[" CHANGELOG.md | head -20
+```
 
-## Output format
+- The top entry version must match `package.json`.
+- The date must be today in `YYYY-MM-DD` format.
+- The entry must list actual changes, not placeholder text.
 
-Summarise findings in sections matching the steps above. For each issue: file, line number, description.
+## Output
+
+Report each step as:
+- ✓ **Step name** — one-line summary
+- ✗ **Step name** — list of issues with `file:line` references
 
 End with one of:
-- **APPROVE** — All checks pass, no issues found.
-- **REQUEST CHANGES** — List blocking issues that must be fixed before merge.
-- **COMMENT** — Non-blocking suggestions.
+
+**APPROVE** — all steps pass, ready to merge.  
+**REQUEST CHANGES** — list each blocking item that must be fixed before merge.  
+**COMMENT** — all required checks pass but there are non-blocking suggestions.
