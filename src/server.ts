@@ -46,7 +46,7 @@ const REVIEW_EVENTS = new Set([
 ]);
 
 // ── Security ──────────────────────────────────────────────────────────────────
-const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB — PR review payloads with diff context can exceed 100 KB
+const MAX_BODY_BYTES = 20 * 1024 * 1024; // 20 MB — increased to handle large PR review payloads
 /** Returns true if the raw body exceeds the allowed limit. */
 export function isOversized(body: string): boolean {
   return Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES;
@@ -1166,4 +1166,22 @@ export function startWebhookServer(
       return new Response("OK", { status: 200 });
     },
   });
+}
+
+/**
+ * Returns a human-readable label for a GitHub webhook event type.
+ * Used in notification summaries.
+ */
+export function getEventLabel(event: string): string {
+  const labels: Record<string, string> = {
+    workflow_run: "CI Workflow",
+    workflow_job: "CI Job",
+    check_suite: "Check Suite",
+    pull_request: "Pull Request",
+    pull_request_review: "PR Review",
+    pull_request_review_comment: "PR Review Comment",
+    push: "Push",
+    issue_comment: "Issue Comment",
+  };
+  return labels[event];
 }
