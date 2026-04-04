@@ -46,7 +46,7 @@ const REVIEW_EVENTS = new Set([
 ]);
 
 // ── Security ──────────────────────────────────────────────────────────────────
-const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB — PR review payloads with diff context can exceed 100 KB
+const MAX_BODY_BYTES = 5 * 1024 * 1024; // 5 MB — tightened limit to reduce memory pressure under load
 /** Returns true if the raw body exceeds the allowed limit. */
 export function isOversized(body: string): boolean {
   return Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES;
