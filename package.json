@@ -1,6 +1,6 @@
 {
   "name": "claude-beacon",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "Claude Code MCP channel plugin — pushes GitHub Actions CI/CD results into running Claude Code sessions",
   "type": "module",
   "main": "dist/index.js",

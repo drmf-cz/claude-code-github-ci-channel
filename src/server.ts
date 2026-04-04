@@ -127,7 +127,10 @@ async function fetchWithTimeout(url: string, init: RequestInit, ms = 15_000): Pr
 
 export interface ReviewEventRecord {
   type: "review" | "review_comment" | "issue_comment" | "unresolved_thread";
+  /** Display-safe reviewer name (sanitized for embedding in notifications). */
   reviewer: string;
+  /** Raw GitHub login from the webhook payload — used for allow-list checks. */
+  rawLogin: string;
   /** Review state from PRReview — undefined for comment/thread events. */
   state?: PRReview["state"];
   body: string;
@@ -718,6 +721,7 @@ export function parseReviewWebhookPayload(
       reviewEvent: {
         type: "review",
         reviewer: sanitizeBody(review.user.login, 100),
+        rawLogin: review.user.login,
         state: review.state,
         body: sanitizeBody(review.body ?? "(no review body)"),
         url: review.html_url,
@@ -739,6 +743,7 @@ export function parseReviewWebhookPayload(
       reviewEvent: {
         type: "review_comment",
         reviewer: sanitizeBody(comment.user.login, 100),
+        rawLogin: comment.user.login,
         body: sanitizeBody(comment.body),
         url: comment.html_url,
         path: comment.path,
@@ -761,6 +766,7 @@ export function parseReviewWebhookPayload(
       reviewEvent: {
         type: "issue_comment",
         reviewer: sanitizeBody(comment.user.login, 100),
+        rawLogin: comment.user.login,
         body: sanitizeBody(comment.body),
         url: comment.html_url,
       },
@@ -782,6 +788,7 @@ export function parseReviewWebhookPayload(
       reviewEvent: {
         type: "unresolved_thread",
         reviewer: sanitizeBody(payload.sender?.login ?? firstComment.user.login, 100),
+        rawLogin: payload.sender?.login ?? firstComment.user.login,
         body: sanitizeBody(firstComment.body),
         url: firstComment.html_url,
         path: firstComment.path,
@@ -1072,7 +1079,7 @@ function handleParsedReviewEvent(
   // When Claude (or the repo owner) replies to a review thread, that reply
   // fires a new webhook — without this guard it would re-trigger the whole
   // review cycle.
-  if (isAuthorAllowed(reviewEvent.reviewer, config.webhooks.allowed_authors)) {
+  if (isAuthorAllowed(reviewEvent.rawLogin, config.webhooks.allowed_authors)) {
     log(
       `[skip] PR #${prMeta.prNumber} review event from ${reviewEvent.reviewer} — own comment, not re-notifying`,
     );

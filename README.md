@@ -410,6 +410,10 @@ When the claude-beacon MCP server connects, call `set_filter` immediately with:
 
 For full details — routing rules, systemd setup, comparison table — see **[docs/multi-session.md](docs/multi-session.md)**.
 
+### Pre-registration queue
+
+If a webhook event arrives before any Claude Code session has called `set_filter`, the mux queues it (up to 50 events per repo, 100 repos, 2-hour TTL) and flushes it automatically the next time a session registers. This covers the common case where the mux restarts while Claude Code is still running.
+
 ### SSE reconnect recovery
 
 The mux buffers the last 50 notifications per stream using `NotificationEventStore`. If a Claude Code session's SSE connection drops and reconnects, it replays any events it missed via the standard `Last-Event-ID` header — no notifications are lost across reconnects.
@@ -508,8 +512,8 @@ These control what Claude is asked to do when an event fires. Each field accepts
 
 | Key | Triggered by | Notable sub-fields |
 |---|---|---|
-| `behavior.on_ci_failure_main.instruction` | `workflow_run` failure on a main branch | — |
-| `behavior.on_ci_failure_branch.instruction` | `workflow_run` failure on any other branch | — |
+| `behavior.on_ci_failure_main.instruction` | `workflow_run` failure on a main branch | `upstream_sync` |
+| `behavior.on_ci_failure_branch.instruction` | `workflow_run` failure on any other branch | `upstream_sync` |
 | `behavior.on_pr_review.instruction` | PR review / comment events (after debounce) | `require_plan`, `skill`, `use_worktree` |
 | `behavior.on_merge_conflict.instruction` | PR with `mergeable_state: dirty` | — |
 | `behavior.on_branch_behind.instruction` | PR with `mergeable_state: behind` | — |
@@ -529,7 +533,11 @@ These control what Claude is asked to do when an event fires. Each field accepts
 |---|---|---|---|
 | `behavior.on_pr_review.require_plan` | boolean | `true` | Whether Claude must enter plan mode before touching code |
 | `behavior.on_pr_review.skill` | string | `"pr-comment-response"` | Skill name invoked to handle the review |
-| `behavior.on_pr_review.use_worktree` | boolean | `false` | When `true`, the PR review subagent runs inside a native Claude Code worktree (`isolation="worktree"`) instead of the current session directory |
+| `behavior.on_pr_review.use_worktree` | boolean | `true` | When `true` (default), PR review work runs in a native Claude Code worktree (`isolation="worktree"`), freeing the main session to handle other notifications in parallel |
+
+**CI failure behavior — rebase first:** The default CI failure instructions include a step 0 that fetches and rebases from main before diagnosing the failure. This catches the common case where the failure is already fixed upstream. Controlled by `behavior.on_ci_failure_main.upstream_sync` and `behavior.on_ci_failure_branch.upstream_sync` (both default `true`). Set to `false` on repos where main is frequently broken or you handle rebasing separately.
+
+**Own-comment skip:** Review notifications from your own GitHub account (i.e., any login in `allowed_authors`) are silently dropped. This prevents an infinite loop where Claude's reply to a review comment triggers another notification.
 
 ### Template placeholders
 

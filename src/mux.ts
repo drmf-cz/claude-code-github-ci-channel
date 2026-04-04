@@ -136,12 +136,29 @@ const pendingByRepo = new Map<string, PendingNotification[]>();
 /** How long a queued notification stays relevant before being discarded. */
 const PENDING_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
 
+/** Maximum distinct repo keys held in the pending queue (DoS guard). */
+const MAX_PENDING_REPOS = 100;
+/** Maximum queued notifications per repo (DoS guard). */
+const MAX_PENDING_PER_REPO = 50;
+
 function enqueuePending(routing: RoutingKey, notification: CINotification): void {
   const key = routing.repo ?? "*";
   const now = Date.now();
+
+  // Evict oldest repo entry if we hit the global key cap.
+  if (!pendingByRepo.has(key) && pendingByRepo.size >= MAX_PENDING_REPOS) {
+    const oldest = pendingByRepo.keys().next().value;
+    if (oldest !== undefined) pendingByRepo.delete(oldest);
+  }
+
   const existing = (pendingByRepo.get(key) ?? []).filter(
     (n) => now - n.receivedAt < PENDING_TTL_MS,
   );
+
+  if (existing.length >= MAX_PENDING_PER_REPO) {
+    existing.shift(); // drop oldest to make room
+  }
+
   existing.push({ notification, routing, receivedAt: now });
   pendingByRepo.set(key, existing);
   log(
@@ -161,16 +178,22 @@ async function flushPendingToSession(repo: string | null, session: SessionEntry)
       continue;
     }
     log(`Flushing ${fresh.length} queued notification(s) for ${key} to newly registered session`);
+    let anyDelivered = false;
     for (const { notification, routing } of fresh) {
       const claimKey = claimKeyFor(routing);
       const enriched = enrichNotification(notification, claimKey, "normal");
       try {
         await sendChannelNotification(session.server, enriched);
+        anyDelivered = true;
       } catch (err) {
         log(`Failed to flush pending notification for ${key}:`, err);
       }
     }
-    pendingByRepo.delete(key);
+    if (anyDelivered) {
+      pendingByRepo.delete(key);
+    } else {
+      log(`All flush attempts failed for ${key} — retaining queue for next session`);
+    }
   }
 }
 
@@ -424,10 +447,19 @@ function createSession(): {
         `Filter set → ${repo ?? "*"}@${branch ?? "*"} label=${label ?? "-"} path=${worktree_path ?? "-"}`,
       );
       // Flush any notifications that arrived before this session registered.
-      // This covers the race where the mux restarted (clearing sessions) while
-      // Claude Code was already running and hadn't yet called set_filter.
+      // Guard: only flush if the requested repo is in allowed_repos (or allowed_repos
+      // is empty, meaning all repos are permitted). This prevents a rogue localhost
+      // process from claiming buffered notifications for a repo it shouldn't see.
       if (entry) {
-        await flushPendingToSession(repo, entry);
+        const repoAllowed =
+          repo === null ||
+          config.webhooks.allowed_repos.length === 0 ||
+          config.webhooks.allowed_repos.includes(repo);
+        if (repoAllowed) {
+          await flushPendingToSession(repo, entry);
+        } else {
+          log(`set_filter: repo "${repo}" not in allowed_repos — pending flush skipped`);
+        }
       }
       return {
         content: [
@@ -690,7 +722,7 @@ if (config.webhooks.allowed_authors.length === 0) {
       `Set GITHUB_TOKEN in ${process.cwd()}/.env and restart.`,
     );
   } else {
-    const masked = `${token.slice(0, 12)}...${token.slice(-4)}`;
+    const masked = `${token.slice(0, 8)}...`;
     log(`GITHUB_TOKEN found: ${masked}`);
     // Probe with GET /rate_limit — works with all token types (classic PAT, fine-grained,
     // OAuth, GitHub App). Fine-grained tokens return 401 on GET /user because that endpoint

@@ -414,6 +414,7 @@ describe("buildReviewNotification", () => {
       {
         type: "review" as const,
         reviewer: "alice",
+        rawLogin: "alice",
         state: "CHANGES_REQUESTED" as const,
         body: "Please add tests.",
         url: "https://github.com/acme/repo/pull/42#pullrequestreview-1",
@@ -429,6 +430,7 @@ describe("buildReviewNotification", () => {
       {
         type: "review" as const,
         reviewer: "alice",
+        rawLogin: "alice",
         state: "CHANGES_REQUESTED" as const,
         body: "Needs error handling.",
         url: "https://github.com/acme/repo/pull/42#r1",
@@ -436,6 +438,7 @@ describe("buildReviewNotification", () => {
       {
         type: "review_comment" as const,
         reviewer: "bob",
+        rawLogin: "bob",
         body: "Consider a Map here.",
         url: "https://github.com/acme/repo/pull/42#r2",
         path: "src/server.ts",
@@ -452,6 +455,7 @@ describe("buildReviewNotification", () => {
       {
         type: "review_comment" as const,
         reviewer: "carol",
+        rawLogin: "carol",
         body: "Missing null check.",
         url: "https://github.com/acme/repo/pull/42#r3",
         path: "src/index.ts",
@@ -466,6 +470,7 @@ describe("buildReviewNotification", () => {
       {
         type: "issue_comment" as const,
         reviewer: "dave",
+        rawLogin: "dave",
         body: "LGTM overall.",
         url: "https://github.com/acme/repo/pull/42#issuecomment-1",
       },
@@ -480,6 +485,7 @@ describe("buildReviewNotification", () => {
       {
         type: "unresolved_thread" as const,
         reviewer: "alice",
+        rawLogin: "alice",
         body: "This still needs fixing.",
         url: "https://github.com/acme/repo/pull/42#discussion_r1",
         path: "src/server.ts",
@@ -495,6 +501,7 @@ describe("buildReviewNotification", () => {
       {
         type: "review" as const,
         reviewer: "alice",
+        rawLogin: "alice",
         state: "APPROVED" as const,
         body: "Ship it!",
         url: "https://github.com/acme/repo/pull/42#r4",
@@ -530,6 +537,7 @@ describe("scheduleReviewNotification — debounce", () => {
   const event = {
     type: "review" as const,
     reviewer: "alice",
+    rawLogin: "alice",
     state: "COMMENTED" as const,
     body: "nit",
     url: "https://github.com/acme/repo/pull/1#r1",
@@ -552,6 +560,7 @@ describe("scheduleReviewNotification — debounce", () => {
     const unresolvedEvent = {
       type: "unresolved_thread" as const,
       reviewer: "alice",
+      rawLogin: "alice",
       body: "Still not addressed.",
       url: "https://github.com/acme/repo/pull/1#discussion_r1",
       path: "src/index.ts",
