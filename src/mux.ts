@@ -114,6 +114,66 @@ function claimKeyFor(routing: RoutingKey): string {
 
 const sessions = new Map<string, SessionEntry>();
 
+// ── Pre-registration notification queue ───────────────────────────────────────
+// When a webhook event arrives before any Claude Code session has registered,
+// the notification would normally be dropped. Instead we buffer it here and
+// flush it the moment a session calls set_filter.
+//
+// Why this happens: the mux may restart (clearing sessions) while Claude Code
+// is already running. Claude Code's existing session ID returns 404, but it
+// does not automatically re-initialize until it next calls a tool. The queued
+// notifications bridge that gap.
+
+interface PendingNotification {
+  notification: CINotification;
+  routing: RoutingKey;
+  receivedAt: number;
+}
+
+/** Events queued while no session was registered. Keyed by repo ("owner/repo"). */
+const pendingByRepo = new Map<string, PendingNotification[]>();
+
+/** How long a queued notification stays relevant before being discarded. */
+const PENDING_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+function enqueuePending(routing: RoutingKey, notification: CINotification): void {
+  const key = routing.repo ?? "*";
+  const now = Date.now();
+  const existing = (pendingByRepo.get(key) ?? []).filter(
+    (n) => now - n.receivedAt < PENDING_TTL_MS,
+  );
+  existing.push({ notification, routing, receivedAt: now });
+  pendingByRepo.set(key, existing);
+  log(
+    `Queued for replay (no session): ${routing.repo}@${routing.branch ?? "*"} — queue depth: ${existing.length}`,
+  );
+}
+
+async function flushPendingToSession(repo: string | null, session: SessionEntry): Promise<void> {
+  const keys = repo !== null ? [repo] : [...pendingByRepo.keys()];
+  const now = Date.now();
+  for (const key of keys) {
+    const pending = pendingByRepo.get(key);
+    if (!pending || pending.length === 0) continue;
+    const fresh = pending.filter((n) => now - n.receivedAt < PENDING_TTL_MS);
+    if (fresh.length === 0) {
+      pendingByRepo.delete(key);
+      continue;
+    }
+    log(`Flushing ${fresh.length} queued notification(s) for ${key} to newly registered session`);
+    for (const { notification, routing } of fresh) {
+      const claimKey = claimKeyFor(routing);
+      const enriched = enrichNotification(notification, claimKey, "normal");
+      try {
+        await sendChannelNotification(session.server, enriched);
+      } catch (err) {
+        log(`Failed to flush pending notification for ${key}:`, err);
+      }
+    }
+    pendingByRepo.delete(key);
+  }
+}
+
 // ── Session TTL ───────────────────────────────────────────────────────────────
 // Streamable HTTP has no persistent connection, so onsessionclosed is not
 // reliably called when Claude Code exits or context-resets. Without this cleanup
@@ -275,9 +335,10 @@ const routeToSessions: NotifyFn = async (
   if (recipients.length === 0) {
     const registered = [...sessions.values()].map((s) => `${s.repo ?? "*"}@${s.branch ?? "*"}`);
     log(
-      `No session found for ${routing.repo} — notification dropped.`,
+      `No session found for ${routing.repo} — queuing for replay.`,
       `Registered: [${registered.join(", ") || "none"}]`,
     );
+    enqueuePending(routing, notification);
     return;
   }
 
@@ -362,6 +423,12 @@ function createSession(): {
       log(
         `Filter set → ${repo ?? "*"}@${branch ?? "*"} label=${label ?? "-"} path=${worktree_path ?? "-"}`,
       );
+      // Flush any notifications that arrived before this session registered.
+      // This covers the race where the mux restarted (clearing sessions) while
+      // Claude Code was already running and hadn't yet called set_filter.
+      if (entry) {
+        await flushPendingToSession(repo, entry);
+      }
       return {
         content: [
           {
@@ -564,6 +631,49 @@ if (config.webhooks.allowed_authors.length === 0) {
     "\nOr pass directly: claude-beacon-mux --author YourGitHubUsername",
   );
   process.exit(1);
+}
+
+// ── GitHub token probe ────────────────────────────────────────────────────────
+// Validate GITHUB_TOKEN at startup so misconfiguration is visible immediately
+// rather than surfacing as a silent 401 on the first push to main.
+{
+  log(`Working directory: ${process.cwd()} (Bun loads .env from here)`);
+  const token = process.env.GITHUB_TOKEN;
+  if (!token) {
+    log(
+      "WARNING: GITHUB_TOKEN is not set.",
+      "Conflict/behind detection (checkPRsAfterPush) and log fetching will not work.",
+      `Set GITHUB_TOKEN in ${process.cwd()}/.env and restart.`,
+    );
+  } else {
+    const masked = `${token.slice(0, 12)}...${token.slice(-4)}`;
+    log(`GITHUB_TOKEN found: ${masked}`);
+    // Probe with GET /rate_limit — works with all token types (classic PAT, fine-grained,
+    // OAuth, GitHub App). Fine-grained tokens return 401 on GET /user because that endpoint
+    // requires user-level permissions they don't have.
+    fetch("https://api.github.com/rate_limit", {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    })
+      .then((r) => {
+        if (r.status === 401 || r.status === 403) {
+          log(
+            `WARNING: GITHUB_TOKEN validation failed (${r.status}) — token is expired, invalid, or not approved.`,
+            `For fine-grained tokens: resource owner must be the org (not personal account),`,
+            `required permissions: Pull requests (read), Actions (read).`,
+            `Set a valid GITHUB_TOKEN in ${process.cwd()}/.env and restart.`,
+          );
+        } else {
+          log(`GITHUB_TOKEN validated (status ${r.status})`);
+        }
+      })
+      .catch(() => {
+        // Network error — don't block startup, the server is responsible for retries.
+      });
+  }
 }
 
 try {

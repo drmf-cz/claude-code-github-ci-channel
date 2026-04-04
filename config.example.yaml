@@ -97,11 +97,19 @@ behavior:
 
   # Triggered when a workflow_run fails on a main/master branch.
   # Placeholders: {repo}, {branch}, {run_url}, {workflow}, {status}, {commit}
+  # The special placeholder {health_check_step} is injected automatically based on
+  # the upstream_sync field — include it in your instruction where you want the sync
+  # step to appear, or omit it to suppress the step entirely.
   on_ci_failure_main:
+    # When true (default), a "step 0" is prepended via {health_check_step}:
+    # fetch + rebase origin/main before diagnosing. Set to false on repos where
+    # main is frequently broken or you handle rebasing separately.
+    upstream_sync: true
     instruction: |
       Main branch is broken. Act immediately — no confirmation needed.
       Use the Agent tool NOW to spawn a subagent with these instructions:
       Diagnose and fix the broken CI on main in {repo}:
+      {health_check_step}
       1. Call fetch_workflow_logs("{run_url}") to read the failure
       2. Identify the failing step and root cause
       3. Apply a targeted fix in the codebase
@@ -110,11 +118,19 @@ behavior:
 
   # Triggered when a workflow_run fails on a non-main branch.
   # Placeholders: {repo}, {branch}, {run_url}, {workflow}, {status}, {commit}
+  # The special placeholder {health_check_step} is injected automatically based on
+  # the upstream_sync field — include it in your instruction where you want the sync
+  # step to appear, or omit it to suppress the step entirely.
   on_ci_failure_branch:
+    # When true (default), a "step 0" is prepended via {health_check_step}:
+    # fetch + rebase origin/main before diagnosing. Set to false on repos where
+    # main is frequently broken or you handle rebasing separately.
+    upstream_sync: true
     instruction: |
       Act immediately — no confirmation needed.
       Use the Agent tool NOW to spawn a subagent with these instructions:
       Investigate the CI failure on branch {branch} in {repo}:
+      {health_check_step}
       1. Call fetch_workflow_logs("{run_url}") to read the failure
       2. Identify the root cause and fix it
       3. Push the fix to the branch.
@@ -132,15 +148,15 @@ behavior:
     skill: pr-comment-response
 
     # When true, the PR review work runs as a subagent inside a native Claude Code
-    # worktree (Agent tool with isolation="worktree"). Set to true if you normally
-    # work in Claude Code native worktrees so reviews apply to an isolated copy.
-    use_worktree: false
+    # worktree (Agent tool with isolation="worktree"), enabling the main session to
+    # handle multiple notifications in parallel without blocking on review work.
+    use_worktree: true
 
     instruction: |
-      {worktree_preamble}MANDATORY: Enter plan mode first.
-      1. Read every linked thread and summarise what each one asks for
-      2. Draft a plan listing the file + change for each thread
-      3. Only after the plan is complete, use the {skill} skill to execute
+      {worktree_preamble}Plan before acting:
+      1. Read every linked thread and summarise what each asks for
+      2. List the exact file + change for each thread
+      3. Only after planning, use the {skill} skill to execute
 
       Do NOT apply any fix before the plan step is done.
 

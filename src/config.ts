@@ -56,8 +56,21 @@ export interface CIFailureBehavior {
    * Instruction template appended to CI failure notifications.
    *
    * Available placeholders: {repo}, {branch}, {run_url}, {workflow}, {status}, {commit}
+   *
+   * The special placeholder {health_check_step} is replaced automatically based on
+   * the `upstream_sync` field below — include it in the template wherever you want
+   * the sync step to appear, or omit it entirely to suppress the step.
    */
   instruction: string;
+  /**
+   * When true (default), a "step 0" is injected via the {health_check_step} placeholder:
+   * fetch + rebase origin/main before diagnosing the failure. This catches cases where
+   * the branch is simply stale and the failure is already fixed upstream.
+   *
+   * Set to false to skip the sync step (e.g. on repos where main is frequently broken,
+   * or when you handle rebasing separately).
+   */
+  upstream_sync: boolean;
 }
 
 /**
@@ -163,10 +176,12 @@ export const DEFAULT_CONFIG: Config = {
       mode: "temp",
     },
     on_ci_failure_main: {
+      upstream_sync: true,
       instruction: [
         "Main branch is broken. Act immediately — no confirmation needed.",
         "Use the Agent tool NOW to spawn a subagent with these instructions:",
         "Diagnose and fix the broken CI on main in {repo}:",
+        "{health_check_step}",
         '1. Call fetch_workflow_logs("{run_url}") to read the failure',
         "2. Identify the failing step and root cause",
         "3. Apply a targeted fix in the codebase",
@@ -175,10 +190,12 @@ export const DEFAULT_CONFIG: Config = {
       ].join("\n"),
     },
     on_ci_failure_branch: {
+      upstream_sync: true,
       instruction: [
         "Act immediately — no confirmation needed.",
         "Use the Agent tool NOW to spawn a subagent with these instructions:",
         "Investigate the CI failure on branch {branch} in {repo}:",
+        "{health_check_step}",
         '1. Call fetch_workflow_logs("{run_url}") to read the failure',
         "2. Identify the root cause and fix it",
         "3. Push the fix to the branch.",
@@ -187,12 +204,12 @@ export const DEFAULT_CONFIG: Config = {
     on_pr_review: {
       require_plan: true,
       skill: "pr-comment-response",
-      use_worktree: false,
+      use_worktree: true,
       instruction: [
-        "{worktree_preamble}MANDATORY: Enter plan mode first.",
-        "1. Read every linked thread and summarise what each one asks for",
-        "2. Draft a plan listing the file + change for each thread",
-        "3. Only after the plan is complete, use the {skill} skill to execute",
+        "{worktree_preamble}Plan before acting:",
+        "1. Read every linked thread and summarise what each asks for",
+        "2. List the exact file + change for each thread",
+        "3. Only after planning, use the {skill} skill to execute",
         "",
         "Do NOT apply any fix before the plan step is done.",
         "",

@@ -8,6 +8,38 @@ This file is the authoritative guide for AI agents (Claude Code) working in this
 
 It is **not** a general web server. Every design decision optimises for: minimal attack surface, zero accidental data leaks, and notifications that Claude can act on autonomously.
 
+## Session startup — REQUIRED
+
+**At the start of every session working in this repo, call `set_filter` immediately:**
+
+```
+set_filter(
+  repo: "drmf-cz/claude-beacon",
+  branch: <output of `git branch --show-current`>,
+  label: <same branch name>,
+  worktree_path: <output of `git rev-parse --show-toplevel`>
+)
+```
+
+This registers the session with the running mux server so CI/PR notifications are routed here. Without this call the session is invisible to the mux and all notifications are dropped (they are queued for up to 2 hours, so calling `set_filter` late will still replay missed events).
+
+Call `set_filter` again after checking out a different branch or entering/leaving a worktree.
+
+## CI failure response — REQUIRED order of operations
+
+When a CI failure notification arrives for a feature branch, **always rebase before diagnosing or fixing**, no matter how obvious the failure looks. Skipping the rebase when the fix seems clear is the #1 cause of stale-base bugs and follow-on version conflicts.
+
+```
+MANDATORY steps — do not skip any:
+1. git fetch origin && git rebase origin/main
+   - If conflicts: resolve them, git add, git rebase --continue, push
+   - If already up to date: proceed to step 2
+2. ONLY THEN read the failure / apply the fix
+3. Push the fix
+```
+
+This applies even for trivially obvious failures (version bump check, lint, etc.) — the branch may be behind main in ways that affect the fix or introduce new conflicts after pushing.
+
 ## Skills available in this repo
 
 Two skills are defined in `.claude/commands/`. Use them — do not replicate their logic inline.
@@ -119,12 +151,46 @@ See `docs/ARCHITECTURE.md` for the rationale behind each guard.
 
 ## Versioning
 
-Every merged PR **must** bump `package.json` version (enforced by CI):
-- `patch` (1.1.x): bug fixes, docs, tests, refactors with no behaviour change
-- `minor` (1.x.0): new features, new config options
-- `major` (x.0.0): breaking config changes, removed fields
+Every merged PR **must** bump `package.json` version (enforced by CI).
+
+**Rule: if a PR contains even one new feature, bump minor — not patch.**
+
+| Change type | Bump | Example |
+|---|---|---|
+| Bug fixes, docs, tests, refactors with no behaviour change | `patch` (1.1.x) | 1.3.2 → 1.3.3 |
+| New features, new config options, new default behaviours | `minor` (1.x.0) | 1.3.x → 1.4.0 |
+| Breaking config changes, removed fields | `major` (x.0.0) | 1.x.x → 2.0.0 |
+
+**Mixed PRs** (fixes + features) always take the highest applicable bump — a PR that has both a bug fix and a new feature is a `minor` bump. When in doubt, check the commit list: any `feat:` commit → minor.
 
 Update `CHANGELOG.md` with every version bump.
+
+## Release tagging — REQUIRED after every merge to main
+
+After any PR merges to main, check whether a release tag is needed:
+
+```bash
+# 1. Get the version currently on main
+git fetch origin main
+CURRENT=$(git show origin/main:package.json | grep '"version"' | grep -oP '[\d.]+')
+
+# 2. Check if that tag already exists
+git fetch --tags
+if git rev-parse "v${CURRENT}" >/dev/null 2>&1; then
+  echo "v${CURRENT} already tagged — nothing to do"
+else
+  echo "MISSING tag v${CURRENT} — creating it"
+  # Tag the latest merge commit on main (the one that contains the version bump)
+  MERGE_COMMIT=$(git log --oneline --merges origin/main | head -1 | awk '{print $1}')
+  git tag "v${CURRENT}" "$MERGE_COMMIT"
+  git push origin "v${CURRENT}"
+fi
+```
+
+**Rules:**
+- Always tag the **merge commit** on main (not the version-bump commit inside the branch)
+- One tag per version — skip if the tag already exists
+- Run this check whenever asked to "tag releases", "create a release", or after merging a PR
 
 ## Merge checklist
 
