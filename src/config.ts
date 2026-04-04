@@ -187,12 +187,12 @@ export const DEFAULT_CONFIG: Config = {
     on_pr_review: {
       require_plan: true,
       skill: "pr-comment-response",
-      use_worktree: false,
+      use_worktree: true,
       instruction: [
-        "{worktree_preamble}MANDATORY: Enter plan mode first.",
-        "1. Read every linked thread and summarise what each one asks for",
-        "2. Draft a plan listing the file + change for each thread",
-        "3. Only after the plan is complete, use the {skill} skill to execute",
+        "{worktree_preamble}Plan before acting:",
+        "1. Read every linked thread and summarise what each asks for",
+        "2. List the exact file + change for each thread",
+        "3. Only after planning, use the {skill} skill to execute",
         "",
         "Do NOT apply any fix before the plan step is done.",
         "",

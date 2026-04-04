@@ -459,7 +459,7 @@ describe("buildReviewNotification", () => {
       },
     ];
     const result = buildReviewNotification(events, meta);
-    expect(result.summary).toContain("plan mode");
+    expect(result.summary).toContain("Plan before acting");
     expect(result.summary).toContain("pr-comment-response");
   });
 
