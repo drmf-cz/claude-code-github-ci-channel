@@ -45,6 +45,9 @@ const REVIEW_EVENTS = new Set([
   "issue_comment",
 ]);
 
+/** Event types that carry CI run / job / check payloads. Used in routing and dispatch. */
+const CI_EVENTS = new Set(["workflow_run", "workflow_job", "check_suite"]);
+
 // ── Security ──────────────────────────────────────────────────────────────────
 const MAX_BODY_BYTES = 20 * 1024 * 1024; // 20 MB — increased to handle large PR review payloads
 /** Returns true if the raw body exceeds the allowed limit. */
@@ -91,23 +94,22 @@ export function sanitizeBody(body: string, maxLen = 500): string {
 
 /**
  * Categorizes a GitHub webhook event into a broad group.
- * Returns "ci", "review", "push", or the raw action/event string as fallback.
+ * Returns "ci", "review", "push", or "other".
  */
-export function categorizeEvent(event: string, action: string): string {
-  if (event === "workflow_run" || event === "workflow_job" || event === "check_suite") {
+export function categorizeEvent(
+  event: string,
+  _action: string,
+): "ci" | "review" | "push" | "other" {
+  if (CI_EVENTS.has(event)) {
     return "ci";
   }
-  if (
-    event === "pull_request" ||
-    event === "pull_request_review" ||
-    event === "pull_request_review_comment"
-  ) {
+  if (event === "pull_request" || REVIEW_EVENTS.has(event)) {
     return "review";
   }
   if (event === "push") {
     return "push";
   }
-  return action.length > 0 ? action : event;
+  return "other";
 }
 
 /** Fetch with a hard timeout. Aborts and rejects if the request exceeds `ms` milliseconds. */
@@ -788,8 +790,7 @@ export function isActionable(event: string, payload: GitHubWebhookPayload): bool
 
   if (event === "push") return true; // handled separately — no action field
 
-  const completedEvents = ["workflow_run", "workflow_job", "check_suite", "check_run"];
-  return completedEvents.includes(event) && payload.action === "completed";
+  return (CI_EVENTS.has(event) || event === "check_run") && payload.action === "completed";
 }
 
 // ── MCP Server ────────────────────────────────────────────────────────────────
