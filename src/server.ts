@@ -355,6 +355,14 @@ function parseWorkflowRunEvent(
   if (status === "failure") {
     lines.push("", "Fetch logs and diagnose:", `  fetch_workflow_logs("${run.html_url}")`);
 
+    const ciFailureBehavior = isMainBranch
+      ? config.behavior.on_ci_failure_main
+      : config.behavior.on_ci_failure_branch;
+    const healthCheckStep = ciFailureBehavior.upstream_sync
+      ? isMainBranch
+        ? "0. Health check: git fetch origin && git pull --rebase origin main\n   If this pull already resolves the failure (someone else fixed it), stop here."
+        : "0. Health check: in the worktree, run:\n   git fetch origin && git rebase origin/main\n   If the rebase surfaces conflicts, resolve them and push — the failure may already be fixed upstream.\n   If the branch is already up to date, proceed to step 1."
+      : "";
     const vars = {
       repo,
       branch: headBranch,
@@ -362,11 +370,9 @@ function parseWorkflowRunEvent(
       workflow: workflowName,
       status,
       commit: commitMsg,
+      health_check_step: healthCheckStep,
     };
-    const template = isMainBranch
-      ? config.behavior.on_ci_failure_main.instruction
-      : config.behavior.on_ci_failure_branch.instruction;
-    lines.push("", ...interpolate(template, vars).split("\n"));
+    lines.push("", ...interpolate(ciFailureBehavior.instruction, vars).split("\n"));
   }
 
   return {
