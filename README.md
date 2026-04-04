@@ -189,12 +189,14 @@ Replace `/home/you` with your home directory (`echo $HOME`). Bun installs global
 claude --dangerously-load-development-channels server:claude-beacon
 ```
 
+> `server:claude-beacon` matches the key you used in `.mcp.json`. The `--dangerously-load-development-channels` flag is required because claude-beacon is a custom channel plugin (research preview) — it's safe to use, it just isn't on Anthropic's built-in allowlist yet.
+
 You should see:
 ```
 Listening for channel messages from: server:claude-beacon
 ```
 
-The server is now running. Push a commit, trigger a CI run, or let a PR fall behind — notifications will appear in your session automatically.
+**Verify it's working:** go to your repo on GitHub → Settings → Webhooks → click your webhook → Recent Deliveries. Trigger any push — you should see a green ✓ delivery. In Claude Code, watch for `[claude-beacon]` log lines confirming receipt.
 
 ---
 
@@ -320,9 +322,11 @@ To make this automatic, add to `~/.claude/CLAUDE.md`:
 
 ```markdown
 ## GitHub CI Channel — session filter
-When claude-beacon MCP connects, call `set_filter` immediately:
-run `git remote get-url origin` (parse to owner/repo) and
-`git branch --show-current`, then call set_filter with those values.
+When the claude-beacon MCP server connects, call `set_filter` immediately with:
+- repo: run `git remote get-url origin | sed 's/.*github\.com[:/]\(.*\)\.git$/\1/'`
+- branch: run `git branch --show-current`
+- label: the branch name
+- worktree_path: run `git rev-parse --show-toplevel`
 ```
 
 For full details — routing rules, systemd setup, comparison table — see **[docs/multi-session.md](docs/multi-session.md)**.

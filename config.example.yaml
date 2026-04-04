@@ -1,11 +1,12 @@
-# github-ci-channel configuration
+# claude-beacon configuration
 #
 # All fields are optional — omitted fields keep their default values.
-# Pass this file at startup: npx @modelcontextprotocol/inspector --config ./my-config.yaml
-# Or via the mcp entry in .claude/settings.json:
-#   "args": ["run", "src/index.ts", "--config", "/path/to/config.yaml"]
+# Pass this file at startup:
+#   claude-beacon-mux --config /path/to/this-file.yaml
+# Or in .mcp.json args:
+#   "args": ["--config", "/path/to/this-file.yaml"]
 #
-# Environment variables still override YAML for server.port and server.debounce_ms.
+# Environment variables (WEBHOOK_PORT, REVIEW_DEBOUNCE_MS) still override YAML.
 
 # ── Server ────────────────────────────────────────────────────────────────────
 server:
