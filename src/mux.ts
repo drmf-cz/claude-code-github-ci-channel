@@ -22,6 +22,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { EventStore } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
 import { DEFAULT_CONFIG, loadConfig } from "./config.js";
@@ -30,6 +31,43 @@ import { createMcpServer, sendChannelNotification, startWebhookServer } from "./
 import type { CINotification } from "./types.js";
 
 const log = (...args: unknown[]) => console.error("[github-ci:mux]", ...args);
+
+// ── Notification event store ───────────────────────────────────────────────────
+// The MCP Streamable HTTP transport sends notifications via the standalone GET
+// SSE stream. If that connection is temporarily down (Claude Code reconnecting),
+// the SDK silently drops the event — no exception, so the caller never knows.
+// Providing an EventStore causes the SDK to buffer missed events and replay them
+// the next time the client opens a GET /mcp request with Last-Event-ID.
+
+class NotificationEventStore implements EventStore {
+  private events = new Map<string, { streamId: string; message: unknown }>();
+
+  async storeEvent(streamId: string, message: unknown): Promise<string> {
+    const id = `${streamId}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    this.events.set(id, { streamId, message });
+    return id;
+  }
+
+  async replayEventsAfter(
+    lastEventId: string,
+    { send }: { send: (id: string, msg: unknown) => Promise<void> },
+  ): Promise<string> {
+    if (!lastEventId || !this.events.has(lastEventId)) return "";
+    const streamId = lastEventId.split("_")[0] ?? "";
+    let found = false;
+    for (const [id, { streamId: sid, message }] of [...this.events.entries()].sort((a, b) =>
+      a[0].localeCompare(b[0]),
+    )) {
+      if (sid !== streamId) continue;
+      if (id === lastEventId) {
+        found = true;
+        continue;
+      }
+      if (found) await send(id, message);
+    }
+    return streamId;
+  }
+}
 
 // ── Session registry ──────────────────────────────────────────────────────────
 
@@ -150,6 +188,7 @@ function createSession(): {
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: () => randomUUID(),
+    eventStore: new NotificationEventStore(),
     onsessioninitialized: (sessionId) => {
       entry = { server, transport, repo: null, branch: null, lastActivityAt: Date.now() };
       sessions.set(sessionId, entry);

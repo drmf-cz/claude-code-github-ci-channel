@@ -873,7 +873,7 @@ export async function sendChannelNotification(
     },
   });
   log(
-    `Pushed to Claude: ${notification.meta.status ?? notification.meta.mergeable_state} on ${notification.meta.repo}`,
+    `Pushed to Claude: ${notification.meta.event ?? notification.meta.status ?? notification.meta.mergeable_state} on ${notification.meta.repo}`,
   );
 }
 
