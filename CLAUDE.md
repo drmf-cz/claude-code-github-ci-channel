@@ -136,10 +136,17 @@ See `docs/ARCHITECTURE.md` for the rationale behind each guard.
 
 ## Versioning
 
-Every merged PR **must** bump `package.json` version (enforced by CI):
-- `patch` (1.1.x): bug fixes, docs, tests, refactors with no behaviour change
-- `minor` (1.x.0): new features, new config options
-- `major` (x.0.0): breaking config changes, removed fields
+Every merged PR **must** bump `package.json` version (enforced by CI).
+
+**Rule: if a PR contains even one new feature, bump minor — not patch.**
+
+| Change type | Bump | Example |
+|---|---|---|
+| Bug fixes, docs, tests, refactors with no behaviour change | `patch` (1.1.x) | 1.3.2 → 1.3.3 |
+| New features, new config options, new default behaviours | `minor` (1.x.0) | 1.3.x → 1.4.0 |
+| Breaking config changes, removed fields | `major` (x.0.0) | 1.x.x → 2.0.0 |
+
+**Mixed PRs** (fixes + features) always take the highest applicable bump — a PR that has both a bug fix and a new feature is a `minor` bump. When in doubt, check the commit list: any `feat:` commit → minor.
 
 Update `CHANGELOG.md` with every version bump.
 
