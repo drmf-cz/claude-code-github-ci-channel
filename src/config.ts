@@ -60,6 +60,10 @@ export interface CIFailureBehavior {
    * The special placeholder {health_check_step} is replaced automatically based on
    * the `upstream_sync` field below — include it in the template wherever you want
    * the sync step to appear, or omit it entirely to suppress the step.
+   *
+   * The special placeholder {use_agent_preamble} is replaced with either a directive
+   * to spawn a subagent (when use_agent=true) or to act in the current session
+   * (when use_agent=false). Include it wherever you want that line to appear.
    */
   instruction: string;
   /**
@@ -71,6 +75,14 @@ export interface CIFailureBehavior {
    * or when you handle rebasing separately).
    */
   upstream_sync: boolean;
+  /**
+   * When true (default), Claude spawns a subagent via the Agent tool to investigate
+   * and fix the CI failure. This keeps the parent session free for other work.
+   *
+   * Set to false to have Claude act inline in the current session — useful for solo
+   * developers who prefer a single context or who find the subagent latency disruptive.
+   */
+  use_agent: boolean;
 }
 
 /**
@@ -177,9 +189,10 @@ export const DEFAULT_CONFIG: Config = {
     },
     on_ci_failure_main: {
       upstream_sync: true,
+      use_agent: true,
       instruction: [
         "Main branch is broken. Act immediately — no confirmation needed.",
-        "Use the Agent tool NOW to spawn a subagent with these instructions:",
+        "{use_agent_preamble}",
         "Diagnose and fix the broken CI on main in {repo}:",
         "{health_check_step}",
         '1. Call fetch_workflow_logs("{run_url}") to read the failure',
@@ -191,9 +204,10 @@ export const DEFAULT_CONFIG: Config = {
     },
     on_ci_failure_branch: {
       upstream_sync: true,
+      use_agent: true,
       instruction: [
         "Act immediately — no confirmation needed.",
-        "Use the Agent tool NOW to spawn a subagent with these instructions:",
+        "{use_agent_preamble}",
         "Investigate the CI failure on branch {branch} in {repo}:",
         "{health_check_step}",
         '1. Call fetch_workflow_logs("{run_url}") to read the failure',

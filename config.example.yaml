@@ -105,9 +105,15 @@ behavior:
     # fetch + rebase origin/main before diagnosing. Set to false on repos where
     # main is frequently broken or you handle rebasing separately.
     upstream_sync: true
+
+    # When true (default), Claude spawns a subagent via the Agent tool to fix CI.
+    # Set to false for inline fixes in the current session (no subagent spawned).
+    # Controls the {use_agent_preamble} placeholder in the instruction template.
+    use_agent: true
+
     instruction: |
       Main branch is broken. Act immediately — no confirmation needed.
-      Use the Agent tool NOW to spawn a subagent with these instructions:
+      {use_agent_preamble}
       Diagnose and fix the broken CI on main in {repo}:
       {health_check_step}
       1. Call fetch_workflow_logs("{run_url}") to read the failure
@@ -127,14 +133,14 @@ behavior:
     # main is frequently broken or you handle rebasing separately.
     upstream_sync: true
 
-    # NOTE: A `use_agent` toggle (true/false) is planned — when false, Claude will
-    # handle CI fixes in the main session instead of spawning a subagent. Not yet
-    # implemented; override the instruction text in the meantime to remove the
-    # "Use the Agent tool NOW" line if you prefer inline fixes.
+    # When true (default), Claude spawns a subagent via the Agent tool to fix CI.
+    # Set to false for inline fixes in the current session — useful for solo devs
+    # who prefer a single context or find subagent latency disruptive.
+    use_agent: true
 
     instruction: |
       Act immediately — no confirmation needed.
-      Use the Agent tool NOW to spawn a subagent with these instructions:
+      {use_agent_preamble}
       Investigate the CI failure on branch {branch} in {repo}:
       {health_check_step}
       1. Call fetch_workflow_logs("{run_url}") to read the failure

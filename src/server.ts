@@ -366,6 +366,9 @@ function parseWorkflowRunEvent(
         ? "0. Health check: git fetch origin && git pull --rebase origin main\n   If this pull already resolves the failure (someone else fixed it), stop here."
         : "0. Health check: in the worktree, run:\n   git fetch origin && git rebase origin/main\n   If the rebase surfaces conflicts, resolve them and push — the failure may already be fixed upstream.\n   If the branch is already up to date, proceed to step 1."
       : "";
+    const useAgentPreamble = ciFailureBehavior.use_agent
+      ? "Use the Agent tool NOW to spawn a subagent with these instructions:"
+      : "Act directly in the current session (no subagent needed):";
     const vars = {
       repo,
       branch: headBranch,
@@ -374,6 +377,7 @@ function parseWorkflowRunEvent(
       status,
       commit: commitMsg,
       health_check_step: healthCheckStep,
+      use_agent_preamble: useAgentPreamble,
     };
     lines.push("", ...interpolate(ciFailureBehavior.instruction, vars).split("\n"));
   }
@@ -827,7 +831,36 @@ export function isActionable(event: string, payload: GitHubWebhookPayload): bool
 export function createMcpServer(): McpServer {
   const mcp = new McpServer(
     { name: "github-ci-channel", version: "1.0.0" },
-    { capabilities: { experimental: { "claude/channel": {} } } },
+    { capabilities: { experimental: { "claude/channel": {} }, resources: {} } },
+  );
+
+  mcp.resource(
+    "startup",
+    "claude-beacon://startup",
+    {
+      description:
+        "Startup instructions for this claude-beacon session. Read on session init and call set_filter with your current git context.",
+      mimeType: "text/plain",
+    },
+    async () => ({
+      contents: [
+        {
+          uri: "claude-beacon://startup",
+          mimeType: "text/plain",
+          text: [
+            "STARTUP: Call set_filter immediately with your current git context:",
+            "",
+            "  repo:          parse from `git remote get-url origin`  (format: owner/repo)",
+            "  branch:        output of `git branch --show-current`",
+            "  label:         same as branch",
+            "  worktree_path: output of `git rev-parse --show-toplevel`",
+            "",
+            "This registers the session so CI/PR notifications are routed here.",
+            "Without this call all notifications are queued and will be replayed once you register.",
+          ].join("\n"),
+        },
+      ],
+    }),
   );
 
   mcp.tool(
@@ -904,6 +937,84 @@ export function createMcpServer(): McpServer {
       } catch (err) {
         return {
           content: [{ type: "text" as const, text: `Fetch failed: ${String(err)}` }],
+        };
+      }
+    },
+  );
+
+  mcp.tool(
+    "rerun_workflow",
+    "Trigger a GitHub Actions workflow rerun after pushing a fix. Use failed_only=true (default) to retry only failed jobs, saving time on passing jobs.",
+    {
+      run_url: z
+        .string()
+        .describe("GitHub Actions run URL (e.g. https://github.com/owner/repo/actions/runs/12345)"),
+      failed_only: z
+        .boolean()
+        .optional()
+        .default(true)
+        .describe("When true (default), only failed jobs are rerun. Set false to rerun all jobs."),
+    },
+    async ({ run_url, failed_only }) => {
+      const token = process.env.GITHUB_TOKEN;
+      if (!token) {
+        return {
+          content: [
+            { type: "text" as const, text: "GITHUB_TOKEN not set — cannot trigger rerun." },
+          ],
+        };
+      }
+
+      const match = run_url.match(/github\.com\/([^/]+\/[^/]+)\/actions\/runs\/(\d+)/);
+      if (!match) {
+        return {
+          content: [{ type: "text" as const, text: `Could not parse run URL: ${run_url}` }],
+        };
+      }
+
+      const [, repoSlug, runId] = match;
+      const path = failed_only ? "rerun-failed-jobs" : "rerun";
+
+      try {
+        const res = await fetchWithTimeout(
+          `https://api.github.com/repos/${repoSlug}/actions/runs/${runId}/${path}`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+            },
+          },
+          30_000,
+        );
+
+        if (res.status === 201) {
+          const scope = failed_only ? "failed jobs" : "all jobs";
+          return {
+            content: [
+              { type: "text" as const, text: `Rerun triggered for run #${runId} (${scope})` },
+            ],
+          };
+        }
+        if (res.status === 403) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: "Permission denied — token needs Actions: Write scope (fine-grained) or repo scope (classic PAT)",
+              },
+            ],
+          };
+        }
+        return {
+          content: [
+            { type: "text" as const, text: `GitHub returned ${res.status} ${res.statusText}` },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text" as const, text: `Request failed: ${String(err)}` }],
         };
       }
     },

@@ -104,6 +104,11 @@ setInterval(() => {
     if (now > c.expiresAt) {
       workClaims.delete(k);
       log(`Claim expired: ${k}`);
+      // Notify the owning session that its claim has lapsed
+      const ownerSession = sessions.get(c.sessionId);
+      if (ownerSession) {
+        sendStatusLine(ownerSession.server, buildStatusText(ownerSession)).catch(() => {});
+      }
     }
   }
 }, 60_000).unref();
@@ -386,6 +391,33 @@ const routeToSessions: NotifyFn = async (
   }
 };
 
+// ── Status line ───────────────────────────────────────────────────────────────
+
+/**
+ * Send a `notifications/claude/statusLine` notification to update the
+ * persistent status indicator in the Claude Code UI for this session.
+ * Errors are swallowed — the status line is best-effort.
+ */
+async function sendStatusLine(server: McpServer, text: string): Promise<void> {
+  try {
+    await server.server.notification({
+      method: "notifications/claude/statusLine",
+      params: { text },
+    });
+  } catch {
+    // Best-effort — some Claude Code versions may not support statusLine
+  }
+}
+
+function buildStatusText(entry: SessionEntry, claimKey?: string, claimExpiresAt?: number): string {
+  const reg = entry.branch
+    ? `claude-beacon ✓ registered · ${entry.branch}`
+    : `claude-beacon ✓ registered`;
+  if (!claimKey || !claimExpiresAt) return reg;
+  const minsLeft = Math.max(1, Math.ceil((claimExpiresAt - Date.now()) / 60_000));
+  return `${reg} | claim: ${claimKey} (${minsLeft}m left)`;
+}
+
 // ── Session factory ───────────────────────────────────────────────────────────
 
 function createSession(): {
@@ -393,6 +425,9 @@ function createSession(): {
   transport: WebStandardStreamableHTTPServerTransport;
 } {
   const server = createMcpServer();
+
+  // The startup resource is already registered by createMcpServer() for single-session mode.
+  // In mux mode the same resource is inherited — no additional registration needed here.
 
   // set_filter, claim_notification, and release_claim are session-scoped: the closure
   // captures the session entry once onsessioninitialized fires and populates it.
@@ -461,6 +496,9 @@ function createSession(): {
           log(`set_filter: repo "${repo}" not in allowed_repos — pending flush skipped`);
         }
       }
+      if (entry) {
+        await sendStatusLine(server, buildStatusText(entry));
+      }
       return {
         content: [
           {
@@ -499,6 +537,8 @@ function createSession(): {
           // Same session calling again (e.g. buffered re-delivery) — renew TTL
           existing.expiresAt = Date.now() + ttl;
           log(`Claim renewed: ${myLabel} still owns ${claim_key}`);
+          if (entry)
+            await sendStatusLine(server, buildStatusText(entry, claim_key, existing.expiresAt));
           return { content: [{ type: "text" as const, text: "already_owned" }] };
         }
         // Different session holds the lock
@@ -508,8 +548,10 @@ function createSession(): {
       }
 
       // No existing claim (or expired) — grant to this session
-      workClaims.set(claim_key, { sessionId, label: myLabel, expiresAt: Date.now() + ttl });
+      const expiresAt = Date.now() + ttl;
+      workClaims.set(claim_key, { sessionId, label: myLabel, expiresAt });
       log(`Claim granted: ${myLabel} owns ${claim_key}`);
+      if (entry) await sendStatusLine(server, buildStatusText(entry, claim_key, expiresAt));
       return { content: [{ type: "text" as const, text: "ok" }] };
     },
   );
@@ -531,6 +573,7 @@ function createSession(): {
       }
       workClaims.delete(claim_key);
       log(`Claim released: ${entry?.label ?? sessionId.slice(0, 8)} released ${claim_key}`);
+      if (entry) await sendStatusLine(server, buildStatusText(entry));
       return { content: [{ type: "text" as const, text: "released" }] };
     },
   );

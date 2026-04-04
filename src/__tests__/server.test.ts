@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { DEFAULT_CONFIG } from "../config.js";
 import {
   buildReviewNotification,
+  createMcpServer,
   isActionable,
   isAuthorAllowed,
   isCoAuthorAllowed,
@@ -883,5 +885,161 @@ describe("isCoAuthorAllowed", () => {
       Promise.resolve({ ok: false, status: 403 })) as unknown as typeof fetch;
     const result = await isCoAuthorAllowed("owner/repo", 1, "token", ["martin@company.com"]);
     expect(result).toBe(false);
+  });
+});
+
+// ── use_agent_preamble placeholder ────────────────────────────────────────────
+describe("parseWorkflowEvent — use_agent_preamble interpolation", () => {
+  const failurePayload: GitHubWebhookPayload = {
+    action: "completed",
+    workflow_run: {
+      id: 1,
+      name: "CI",
+      status: "completed",
+      conclusion: "failure",
+      html_url: "https://github.com/acme/repo/actions/runs/1",
+      head_branch: "feat/my-feature",
+      head_commit: { message: "feat: add something" },
+      run_number: 1,
+      run_started_at: new Date(Date.now() - 60_000).toISOString(),
+      updated_at: new Date().toISOString(),
+    },
+    repository: { full_name: "acme/repo" },
+  };
+
+  it("uses subagent preamble when use_agent=true (default)", () => {
+    const result = parseWorkflowEvent("workflow_run", failurePayload);
+    expect(result).not.toBeNull();
+    expect(result?.summary).toContain("Use the Agent tool NOW to spawn a subagent");
+    expect(result?.summary).not.toContain("Act directly in the current session");
+  });
+
+  it("uses inline preamble when use_agent=false", () => {
+    const config = {
+      ...DEFAULT_CONFIG,
+      behavior: {
+        ...DEFAULT_CONFIG.behavior,
+        on_ci_failure_branch: {
+          ...DEFAULT_CONFIG.behavior.on_ci_failure_branch,
+          use_agent: false,
+        },
+      },
+    };
+    const result = parseWorkflowEvent("workflow_run", failurePayload, config);
+    expect(result).not.toBeNull();
+    expect(result?.summary).toContain("Act directly in the current session");
+    expect(result?.summary).not.toContain("Use the Agent tool NOW");
+  });
+});
+
+// ── rerun_workflow tool ───────────────────────────────────────────────────────
+// Access the MCP SDK's internal tool registry (plain object, keyed by tool name).
+type ToolEntry = {
+  handler: (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }>;
+};
+type ToolRegistry = Record<string, ToolEntry>;
+
+function getToolHandler(name: string) {
+  const mcp = createMcpServer();
+  const tools = (mcp as unknown as { _registeredTools: ToolRegistry })._registeredTools;
+  return tools[name]?.handler;
+}
+
+describe("createMcpServer — rerun_workflow tool", () => {
+  const originalFetch = globalThis.fetch;
+  const originalToken = process.env.GITHUB_TOKEN;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    process.env.GITHUB_TOKEN = originalToken;
+  });
+
+  it("is registered on the MCP server", () => {
+    const mcp = createMcpServer();
+    const tools = (mcp as unknown as { _registeredTools: ToolRegistry })._registeredTools;
+    expect(Object.keys(tools)).toContain("rerun_workflow");
+  });
+
+  it("returns error when GITHUB_TOKEN is not set", async () => {
+    delete process.env.GITHUB_TOKEN;
+    const handler = getToolHandler("rerun_workflow");
+    const result = await handler?.({
+      run_url: "https://github.com/acme/repo/actions/runs/1",
+      failed_only: true,
+    });
+    expect(result?.content[0]?.text).toContain("GITHUB_TOKEN not set");
+  });
+
+  it("returns error for malformed run URL", async () => {
+    process.env.GITHUB_TOKEN = "test-token";
+    const handler = getToolHandler("rerun_workflow");
+    const result = await handler?.({
+      run_url: "https://not-github.com/bad-url",
+      failed_only: true,
+    });
+    expect(result?.content[0]?.text).toContain("Could not parse run URL");
+  });
+
+  it("uses rerun-failed-jobs endpoint when failed_only=true", async () => {
+    process.env.GITHUB_TOKEN = "test-token";
+    let calledUrl = "";
+    globalThis.fetch = ((url: string) => {
+      calledUrl = url;
+      return Promise.resolve({ status: 201, statusText: "Created" });
+    }) as unknown as typeof fetch;
+    const handler = getToolHandler("rerun_workflow");
+    await handler?.({ run_url: "https://github.com/acme/repo/actions/runs/42", failed_only: true });
+    expect(calledUrl).toContain("rerun-failed-jobs");
+  });
+
+  it("uses rerun endpoint when failed_only=false", async () => {
+    process.env.GITHUB_TOKEN = "test-token";
+    let calledUrl = "";
+    globalThis.fetch = ((url: string) => {
+      calledUrl = url;
+      return Promise.resolve({ status: 201, statusText: "Created" });
+    }) as unknown as typeof fetch;
+    const handler = getToolHandler("rerun_workflow");
+    await handler?.({
+      run_url: "https://github.com/acme/repo/actions/runs/42",
+      failed_only: false,
+    });
+    expect(calledUrl).toContain("/rerun");
+    expect(calledUrl).not.toContain("rerun-failed-jobs");
+  });
+
+  it("returns success message on 201", async () => {
+    process.env.GITHUB_TOKEN = "test-token";
+    globalThis.fetch = (() =>
+      Promise.resolve({ status: 201, statusText: "Created" })) as unknown as typeof fetch;
+    const handler = getToolHandler("rerun_workflow");
+    const result = await handler?.({
+      run_url: "https://github.com/acme/repo/actions/runs/42",
+      failed_only: true,
+    });
+    expect(result?.content[0]?.text).toContain("Rerun triggered for run #42");
+  });
+
+  it("returns permission error on 403", async () => {
+    process.env.GITHUB_TOKEN = "test-token";
+    globalThis.fetch = (() =>
+      Promise.resolve({ status: 403, statusText: "Forbidden" })) as unknown as typeof fetch;
+    const handler = getToolHandler("rerun_workflow");
+    const result = await handler?.({
+      run_url: "https://github.com/acme/repo/actions/runs/42",
+      failed_only: true,
+    });
+    expect(result?.content[0]?.text).toContain("Permission denied");
+  });
+});
+
+// ── claude-beacon://startup resource ─────────────────────────────────────────
+describe("createMcpServer — startup resource", () => {
+  it("registers a claude-beacon://startup resource", () => {
+    const mcp = createMcpServer();
+    const resources = (mcp as unknown as { _registeredResources: Record<string, unknown> })
+      ._registeredResources;
+    expect(resources).toBeDefined();
+    expect(Object.keys(resources).some((k) => k.includes("startup"))).toBe(true);
   });
 });
