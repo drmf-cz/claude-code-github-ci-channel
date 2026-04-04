@@ -633,6 +633,43 @@ if (config.webhooks.allowed_authors.length === 0) {
   process.exit(1);
 }
 
+// ── GitHub token probe ────────────────────────────────────────────────────────
+// Validate GITHUB_TOKEN at startup so misconfiguration is visible immediately
+// rather than surfacing as a silent 401 on the first push to main.
+{
+  const token = process.env.GITHUB_TOKEN;
+  if (!token) {
+    log(
+      "WARNING: GITHUB_TOKEN is not set.",
+      "Conflict/behind detection (checkPRsAfterPush) and log fetching will not work.",
+      "Set GITHUB_TOKEN in your .env file or environment and restart.",
+    );
+  } else {
+    // Lightweight probe: GET /user requires no repo scope but verifies the token is valid.
+    fetch("https://api.github.com/user", {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    })
+      .then((r) => {
+        if (r.status === 401 || r.status === 403) {
+          log(
+            `WARNING: GITHUB_TOKEN validation failed (${r.status}) — token is expired or invalid.`,
+            `Conflict/behind detection and log fetching will return 401 until the token is replaced.`,
+            `Set a valid GITHUB_TOKEN in your .env file and restart.`,
+          );
+        } else {
+          log(`GITHUB_TOKEN validated (status ${r.status})`);
+        }
+      })
+      .catch(() => {
+        // Network error — don't block startup, the server is responsible for retries.
+      });
+  }
+}
+
 try {
   const webhookServer = startWebhookServer(routeToSessions, config);
   log(`Webhook server listening on http://localhost:${webhookServer.port}`);

@@ -600,7 +600,15 @@ export async function checkPRsAfterPush(
   );
 
   if (!resp.ok) {
-    log(`PR list fetch failed: ${resp.status}`);
+    if (resp.status === 401 || resp.status === 403) {
+      log(
+        `PR list fetch failed: ${resp.status} — GITHUB_TOKEN is missing, expired, or lacks "repo" scope.`,
+        `Conflict/behind detection will not work until a valid token is set.`,
+        `Set GITHUB_TOKEN in your .env file (Bun loads it automatically) and restart the server.`,
+      );
+    } else {
+      log(`PR list fetch failed: ${resp.status}`);
+    }
     return;
   }
 
