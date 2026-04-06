@@ -171,6 +171,35 @@ export interface SecurityAlertBehavior<S extends string> {
   instruction: string;
 }
 
+export interface PROpenedBehavior {
+  /**
+   * Whether to notify when a PR is opened, reopened, or marked ready for review.
+   * Disabled by default — enable on the session responsible for automated first-pass review.
+   */
+  enabled: boolean;
+  /**
+   * Instruction template appended to PR-opened notifications.
+   *
+   * Available placeholders: {repo}, {pr_number}, {pr_title}, {pr_url},
+   *   {head_branch}, {base_branch}, {author}
+   */
+  instruction: string;
+}
+
+export interface PRApprovedBehavior {
+  /**
+   * Whether to use a separate handler for APPROVED reviews instead of on_pr_review.
+   * Disabled by default. When enabled, APPROVED reviews no longer flow to on_pr_review.
+   */
+  enabled: boolean;
+  /**
+   * Instruction template appended to PR-approved notifications.
+   *
+   * Available placeholders: {repo}, {pr_number}, {pr_title}, {pr_url}, {reviewer}
+   */
+  instruction: string;
+}
+
 export interface BehaviorConfig {
   /** Worktree strategy for all subagent operations. */
   worktrees: WorktreeConfig;
@@ -188,6 +217,10 @@ export interface BehaviorConfig {
   on_dependabot_alert: SecurityAlertBehavior<DependabotMinSeverity>;
   /** Behaviour when a code scanning (SAST) alert is created. */
   on_code_scanning_alert: SecurityAlertBehavior<CodeScanningMinSeverity>;
+  /** Behaviour when a PR is opened, reopened, or marked ready for review. Disabled by default. */
+  on_pr_opened: PROpenedBehavior;
+  /** Behaviour when a reviewer submits an APPROVED review. Disabled by default. */
+  on_pr_approved: PRApprovedBehavior;
 }
 
 export interface Config {
@@ -309,6 +342,25 @@ export const DEFAULT_CONFIG: Config = {
         "Details: {alert_url}",
         "",
         "Review the finding and apply a fix.",
+      ].join("\n"),
+    },
+    on_pr_opened: {
+      enabled: false,
+      instruction: [
+        'New PR #{pr_number} opened by {author}: "{pr_title}"',
+        "Repo: {repo} | Branch: {head_branch} → {base_branch}",
+        "URL: {pr_url}",
+        "",
+        "Review the PR and leave comments on any issues.",
+      ].join("\n"),
+    },
+    on_pr_approved: {
+      enabled: false,
+      instruction: [
+        'PR #{pr_number} "{pr_title}" has been approved by {reviewer}.',
+        "Repo: {repo} | URL: {pr_url}",
+        "",
+        "The PR is approved — merge when ready or address any remaining tasks.",
       ].join("\n"),
     },
   },

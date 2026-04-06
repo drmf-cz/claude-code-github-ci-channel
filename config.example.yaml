@@ -242,6 +242,29 @@ behavior:
 
       Review the finding and apply a fix.
 
+  # Triggered when a PR is opened, reopened, or marked ready for review.
+  # Disabled by default — enable only on the session responsible for automated review.
+  # Placeholders: {repo}, {pr_number}, {pr_title}, {pr_url}, {head_branch}, {base_branch}, {author}
+  on_pr_opened:
+    enabled: false
+    instruction: |
+      New PR #{pr_number} opened by {author}: "{pr_title}"
+      Repo: {repo} | Branch: {head_branch} → {base_branch}
+      URL: {pr_url}
+
+      Review the PR and leave comments on any issues.
+
+  # Triggered when a reviewer submits an APPROVED review.
+  # Disabled by default. When enabled, APPROVED reviews use this handler instead of on_pr_review.
+  # Placeholders: {repo}, {pr_number}, {pr_title}, {pr_url}, {reviewer}
+  on_pr_approved:
+    enabled: false
+    instruction: |
+      PR #{pr_number} "{pr_title}" has been approved by {reviewer}.
+      Repo: {repo} | URL: {pr_url}
+
+      The PR is approved — merge when ready or address any remaining tasks.
+
 # ── Code style guidelines ─────────────────────────────────────────────────────
 # Free-text block prepended to every PR review notification.
 # Use this to communicate project conventions so the agent applies them

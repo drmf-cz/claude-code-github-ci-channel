@@ -1,7 +1,12 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import type { CodeScanningMinSeverity, Config, DependabotMinSeverity } from "./config.js";
+import type {
+  CodeScanningMinSeverity,
+  Config,
+  DependabotMinSeverity,
+  PROpenedBehavior,
+} from "./config.js";
 import {
   buildWorktreePreamble,
   buildWorktreeRebaseSteps,
@@ -497,11 +502,12 @@ export function parsePullRequestEvent(
   if (!pr) return null;
 
   const repo = payload.repository?.full_name ?? "unknown";
-  const state: MergeableState = pr.mergeable_state;
+  const action = payload.action ?? "";
   // Sanitize user-controlled fields before embedding in notifications Claude acts on
   const prTitle = sanitizeBody(pr.title ?? "", 200);
   const headBranch = sanitizeBody(pr.head.ref ?? "", 100);
   const baseBranch = sanitizeBody(pr.base.ref ?? "", 100);
+  const author = sanitizeBody(pr.user.login, 100);
 
   const prVars = {
     repo,
@@ -510,11 +516,37 @@ export function parsePullRequestEvent(
     pr_url: pr.html_url,
     head_branch: headBranch,
     base_branch: baseBranch,
+    author,
   };
+
+  // on_pr_opened: fires on opened/reopened/ready_for_review when enabled
+  if (
+    config.behavior.on_pr_opened.enabled &&
+    ["opened", "reopened", "ready_for_review"].includes(action)
+  ) {
+    const instruction = interpolate(config.behavior.on_pr_opened.instruction, prVars);
+    return {
+      summary: instruction,
+      meta: {
+        source: "github-ci",
+        event: "pull_request",
+        action,
+        repo,
+        pr_number: String(pr.number),
+        pr_title: prTitle,
+        head_branch: headBranch,
+        base_branch: baseBranch,
+        pr_url: pr.html_url,
+        author,
+      },
+    };
+  }
+
+  const state: MergeableState = pr.mergeable_state;
   const prMeta = {
     source: "github-ci",
     event: "pull_request",
-    action: payload.action ?? "",
+    action,
     repo,
     pr_number: String(pr.number),
     pr_title: prTitle,
@@ -703,6 +735,49 @@ export async function checkPRsAfterPush(
   }
 }
 
+/**
+ * Parse a `pull_request_review` APPROVED event when `on_pr_approved` is enabled.
+ * Returns null when disabled, when review is not APPROVED, or when the action is not "submitted".
+ */
+export function parsePRApprovedEvent(
+  event: string,
+  action: string | undefined,
+  payload: GitHubWebhookPayload,
+  config: Config = DEFAULT_CONFIG,
+): CINotification | null {
+  if (!config.behavior.on_pr_approved.enabled) return null;
+  if (event !== "pull_request_review" || action !== "submitted") return null;
+
+  const review = payload.review as PRReview | undefined;
+  const pr = payload.pull_request;
+  if (!review || !pr || review.state !== "APPROVED") return null;
+
+  const repo = sanitizeBody(payload.repository?.full_name ?? "unknown", 100);
+  const prTitle = sanitizeBody(pr.title ?? "", 200);
+  const reviewer = sanitizeBody(review.user.login, 100);
+
+  const vars: Record<string, string> = {
+    repo,
+    pr_number: String(pr.number),
+    pr_title: prTitle,
+    pr_url: pr.html_url,
+    reviewer,
+  };
+
+  const summary = interpolate(config.behavior.on_pr_approved.instruction, vars);
+  return {
+    summary,
+    meta: {
+      source: "github-ci",
+      event: "pull_request_review",
+      action: "approved",
+      repo,
+      pr_number: String(pr.number),
+      reviewer,
+    },
+  };
+}
+
 export type ReviewPayload = {
   reviewEvent: ReviewEventRecord;
   prMeta: { prNumber: number; prTitle: string; prUrl: string; repo: string };
@@ -711,11 +786,14 @@ export type ReviewPayload = {
 /**
  * Parse a PR review / comment webhook payload into a ReviewEventRecord + PR metadata.
  * Returns null for events we do not act on.
+ * When `config.behavior.on_pr_approved.enabled`, APPROVED reviews are handled by
+ * parsePRApprovedEvent instead and are skipped here to prevent double-firing.
  */
 export function parseReviewWebhookPayload(
   event: string,
   action: string | undefined,
   payload: GitHubWebhookPayload,
+  config: Config = DEFAULT_CONFIG,
 ): ReviewPayload | null {
   const repo = payload.repository?.full_name ?? "unknown";
 
@@ -723,6 +801,8 @@ export function parseReviewWebhookPayload(
     const review = payload.review as PRReview | undefined;
     const pr = payload.pull_request;
     if (!review || !pr || review.state === "pending") return null;
+    // APPROVED reviews are claimed by parsePRApprovedEvent when that handler is enabled
+    if (review.state === "APPROVED" && config.behavior.on_pr_approved.enabled) return null;
     return {
       reviewEvent: {
         type: "review",
@@ -812,15 +892,26 @@ export function parseReviewWebhookPayload(
 }
 
 // ── Actionable Event Filter ───────────────────────────────────────────────────
-export function isActionable(event: string, payload: GitHubWebhookPayload): boolean {
+export function isActionable(
+  event: string,
+  payload: GitHubWebhookPayload,
+  onPrOpened?: PROpenedBehavior,
+): boolean {
   if (event === "ping") return false;
 
   if (event === "pull_request") {
+    const action = payload.action ?? "";
     const state = payload.pull_request?.mergeable_state;
-    // Only act when GitHub has finished computing mergeability
+
+    // on_pr_opened enabled: pass through opened/reopened/ready_for_review actions
+    if (onPrOpened?.enabled && ["opened", "reopened", "ready_for_review"].includes(action)) {
+      return true;
+    }
+
+    // Default: only act when GitHub has finished computing mergeability
     return (
-      ["opened", "synchronize", "reopened"].includes(payload.action ?? "") &&
-      (state === "dirty" || state === "behind")
+      ["opened", "synchronize", "reopened"].includes(action) &&
+      (state === "dirty" || state === "behind" || state === "blocked")
     );
   }
 
@@ -1403,6 +1494,27 @@ function handleParsedReviewEvent(
   if (!accepted) log(`PR #${prMeta.prNumber} review event discarded (cooldown active)`);
 }
 
+function handleReviewEvents(
+  event: string,
+  payload: GitHubWebhookPayload,
+  payloadRepo: string | undefined,
+  config: Config,
+  notify: NotifyFn,
+): Response {
+  const approvedNotification = parsePRApprovedEvent(event, payload.action, payload, config);
+  if (approvedNotification) {
+    void notify(approvedNotification, { repo: payloadRepo ?? "unknown", branch: null });
+    return new Response("OK", { status: 200 });
+  }
+  const parsed = parseReviewWebhookPayload(event, payload.action, payload, config);
+  if (parsed) {
+    handleParsedReviewEvent(event, payload, parsed, config, notify);
+  } else {
+    logReviewSkipReason(event, payload);
+  }
+  return new Response("OK", { status: 200 });
+}
+
 // ── HTTP Webhook Server ───────────────────────────────────────────────────────
 
 /**
@@ -1496,16 +1608,10 @@ export function startWebhookServer(
 
       // ── PR Review / Comment events (debounced) ──────────────────────────────
       if (REVIEW_EVENTS.has(event)) {
-        const parsed = parseReviewWebhookPayload(event, payload.action, payload);
-        if (parsed) {
-          handleParsedReviewEvent(event, payload, parsed, config, notify);
-        } else {
-          logReviewSkipReason(event, payload);
-        }
-        return new Response("OK", { status: 200 });
+        return handleReviewEvents(event, payload, payloadRepo, config, notify);
       }
 
-      if (!isActionable(event, payload)) {
+      if (!isActionable(event, payload, config.behavior.on_pr_opened)) {
         log(`Skipping non-actionable event: ${event}/${payload.action ?? ""}`);
         return new Response("Skipped", { status: 200 });
       }
