@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_CONFIG, interpolate, loadConfig } from "../config.js";
+import { buildWorktreeRebaseSteps, DEFAULT_CONFIG, interpolate, loadConfig } from "../config.js";
 
 // ── interpolate ───────────────────────────────────────────────────────────────
 describe("interpolate", () => {
@@ -151,5 +151,48 @@ describe("loadConfig", () => {
     expect(cfg.behavior.on_ci_failure_main.instruction).toBe("custom instruction");
     // Other behavior fields unchanged
     expect(cfg.behavior.on_pr_review.skill).toBe("pr-comment-response");
+  });
+});
+
+// ── buildWorktreeRebaseSteps ──────────────────────────────────────────────────
+describe("buildWorktreeRebaseSteps", () => {
+  const vars = {
+    pr_number: "42",
+    head_branch: "feat/my-feature",
+    base_branch: "main",
+    repo: "acme/myrepo",
+  };
+
+  it("includes repo slug in path (temp mode)", () => {
+    const steps = buildWorktreeRebaseSteps({ mode: "temp", base_dir: "/tmp" }, vars, false);
+    expect(steps).toContain("/tmp/myrepo-pr-42-rebase");
+    expect(steps).not.toContain("/tmp/pr-42-rebase");
+  });
+
+  it("respects custom base_dir (temp mode)", () => {
+    const steps = buildWorktreeRebaseSteps(
+      { mode: "temp", base_dir: "/var/worktrees" },
+      vars,
+      false,
+    );
+    expect(steps).toContain("/var/worktrees/myrepo-pr-42-rebase");
+  });
+
+  it("produces add and remove commands (temp mode, no conflicts)", () => {
+    const steps = buildWorktreeRebaseSteps({ mode: "temp", base_dir: "/tmp" }, vars, false);
+    expect(steps).toContain("git worktree add");
+    expect(steps).toContain("git worktree remove");
+    expect(steps).not.toContain("rebase --continue");
+  });
+
+  it("includes conflict resolution step (temp mode, with conflicts)", () => {
+    const steps = buildWorktreeRebaseSteps({ mode: "temp", base_dir: "/tmp" }, vars, true);
+    expect(steps).toContain("rebase --continue");
+  });
+
+  it("produces Agent tool instruction (native mode)", () => {
+    const steps = buildWorktreeRebaseSteps({ mode: "native", base_dir: "/tmp" }, vars, false);
+    expect(steps).toContain('isolation="worktree"');
+    expect(steps).not.toContain("git worktree add");
   });
 });

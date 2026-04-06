@@ -11,6 +11,7 @@ import {
   isOversized,
   parseCodeScanningAlertEvent,
   parseDependabotAlertEvent,
+  parsePRApprovedEvent,
   parseReviewWebhookPayload,
   parseWorkflowEvent,
   pendingReviews,
@@ -1274,5 +1275,143 @@ describe("parseCodeScanningAlertEvent", () => {
     const result = parseCodeScanningAlertEvent(injectionPayload, enabledConfig);
     expect(result?.summary).not.toContain("\x00");
     expect(result?.summary).not.toContain("\u202E");
+  });
+});
+
+// ── parsePRApprovedEvent ──────────────────────────────────────────────────────
+describe("parsePRApprovedEvent", () => {
+  const enabledConfig = {
+    ...DEFAULT_CONFIG,
+    behavior: {
+      ...DEFAULT_CONFIG.behavior,
+      on_pr_approved: { ...DEFAULT_CONFIG.behavior.on_pr_approved, enabled: true },
+    },
+  };
+
+  const basePayload: GitHubWebhookPayload = {
+    action: "submitted",
+    repository: { full_name: "acme/repo" },
+    pull_request: {
+      number: 42,
+      title: "Add feature",
+      state: "open",
+      html_url: "https://github.com/acme/repo/pull/42",
+      head: { ref: "feat/add-feature", sha: "abc123" },
+      base: { ref: "main", sha: "def456" },
+      mergeable: true,
+      mergeable_state: "clean",
+      user: { login: "alice" },
+    },
+    review: {
+      id: 1,
+      user: { login: "bob" },
+      state: "APPROVED",
+      body: "LGTM",
+      html_url: "https://github.com/acme/repo/pull/42#pullrequestreview-1",
+      submitted_at: "2024-01-01T00:00:00Z",
+    },
+  };
+
+  it("returns null when disabled (default)", () => {
+    expect(parsePRApprovedEvent("pull_request_review", "submitted", basePayload)).toBeNull();
+  });
+
+  it("returns a notification for an APPROVED review when enabled", () => {
+    const result = parsePRApprovedEvent(
+      "pull_request_review",
+      "submitted",
+      basePayload,
+      enabledConfig,
+    );
+    expect(result).not.toBeNull();
+    expect(result?.summary).toContain("bob");
+    expect(result?.meta.action).toBe("approved");
+  });
+
+  it("returns null for non-APPROVED review states when enabled", () => {
+    const changesPayload = {
+      ...basePayload,
+      review: {
+        id: 1,
+        user: { login: "bob" },
+        body: null,
+        html_url: "",
+        submitted_at: null,
+        state: "CHANGES_REQUESTED" as const,
+      },
+    };
+    expect(
+      parsePRApprovedEvent("pull_request_review", "submitted", changesPayload, enabledConfig),
+    ).toBeNull();
+  });
+
+  it("returns null for non-review events", () => {
+    expect(
+      parsePRApprovedEvent("pull_request_review_comment", "created", basePayload, enabledConfig),
+    ).toBeNull();
+  });
+});
+
+// ── parsePullRequestEvent — on_pr_opened ──────────────────────────────────────
+describe("parsePullRequestEvent — on_pr_opened", () => {
+  const enabledConfig = {
+    ...DEFAULT_CONFIG,
+    behavior: {
+      ...DEFAULT_CONFIG.behavior,
+      on_pr_opened: { ...DEFAULT_CONFIG.behavior.on_pr_opened, enabled: true },
+    },
+  };
+
+  const basePayload: GitHubWebhookPayload = {
+    action: "opened",
+    repository: { full_name: "acme/repo" },
+    pull_request: {
+      number: 10,
+      title: "My feature",
+      state: "open",
+      html_url: "https://github.com/acme/repo/pull/10",
+      head: { ref: "feat/my-feature", sha: "aaa" },
+      base: { ref: "main", sha: "bbb" },
+      mergeable: null,
+      mergeable_state: "unknown",
+      user: { login: "alice" },
+    },
+  };
+
+  it("returns null when disabled (default)", () => {
+    expect(parsePullRequestEvent(basePayload)).toBeNull();
+  });
+
+  it("returns a notification for opened action when enabled", () => {
+    const result = parsePullRequestEvent(basePayload, enabledConfig);
+    expect(result).not.toBeNull();
+    expect(result?.meta.action).toBe("opened");
+  });
+
+  it("returns a notification for ready_for_review action when enabled", () => {
+    const payload = { ...basePayload, action: "ready_for_review" };
+    expect(parsePullRequestEvent(payload, enabledConfig)?.meta.action).toBe("ready_for_review");
+  });
+
+  it("returns null for synchronize action (not an open event)", () => {
+    const payload = { ...basePayload, action: "synchronize" };
+    expect(parsePullRequestEvent(payload, enabledConfig)).toBeNull();
+  });
+});
+
+// ── isActionable — on_pr_opened ───────────────────────────────────────────────
+describe("isActionable — on_pr_opened", () => {
+  const openedBehavior = { enabled: true, instruction: "" };
+  const unknownStatePR: GitHubWebhookPayload = {
+    action: "opened",
+    pull_request: { ...basePR, mergeable_state: "unknown" },
+  };
+
+  it("passes opened action through when on_pr_opened enabled", () => {
+    expect(isActionable("pull_request", unknownStatePR, openedBehavior)).toBe(true);
+  });
+
+  it("blocks opened action when on_pr_opened disabled", () => {
+    expect(isActionable("pull_request", unknownStatePR)).toBe(false);
   });
 });

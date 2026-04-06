@@ -21,6 +21,9 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { EventStore } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
@@ -31,6 +34,28 @@ import { createMcpServer, sendChannelNotification, startWebhookServer } from "./
 import type { CINotification } from "./types.js";
 
 const log = (...args: unknown[]) => console.error("[github-ci:mux]", ...args);
+
+// ── Claim file helpers ─────────────────────────────────────────────────────────
+// Written to ~/.claude/beacon-active-claim so a Claude Code Stop hook can read
+// the current claim key and POST /release-claim to free it without an MCP call.
+
+const CLAIM_FILE = join(homedir(), ".claude", "beacon-active-claim");
+
+function writeClaimFile(claimKey: string): void {
+  try {
+    writeFileSync(CLAIM_FILE, claimKey, "utf8");
+  } catch {
+    // Non-fatal — Stop hook will fall back to TTL expiry
+  }
+}
+
+function deleteClaimFile(): void {
+  try {
+    rmSync(CLAIM_FILE, { force: true });
+  } catch {
+    // Non-fatal
+  }
+}
 
 // ── Notification event store ───────────────────────────────────────────────────
 // The MCP Streamable HTTP transport sends notifications via the standalone GET
@@ -103,6 +128,7 @@ setInterval(() => {
   for (const [k, c] of workClaims) {
     if (now > c.expiresAt) {
       workClaims.delete(k);
+      deleteClaimFile();
       log(`Claim expired: ${k}`);
       // Notify the owning session that its claim has lapsed
       const ownerSession = sessions.get(c.sessionId);
@@ -550,6 +576,7 @@ function createSession(): {
       // No existing claim (or expired) — grant to this session
       const expiresAt = Date.now() + ttl;
       workClaims.set(claim_key, { sessionId, label: myLabel, expiresAt });
+      writeClaimFile(claim_key);
       log(`Claim granted: ${myLabel} owns ${claim_key}`);
       if (entry) await sendStatusLine(server, buildStatusText(entry, claim_key, expiresAt));
       return { content: [{ type: "text" as const, text: "ok" }] };
@@ -572,6 +599,7 @@ function createSession(): {
         return { content: [{ type: "text" as const, text: "not_owner" }] };
       }
       workClaims.delete(claim_key);
+      deleteClaimFile();
       log(`Claim released: ${entry?.label ?? sessionId.slice(0, 8)} released ${claim_key}`);
       if (entry) await sendStatusLine(server, buildStatusText(entry));
       return { content: [{ type: "text" as const, text: "released" }] };
@@ -629,6 +657,27 @@ Bun.serve({
   idleTimeout: 0,
   async fetch(req) {
     const url = new URL(req.url);
+
+    // POST /release-claim — lightweight HTTP release endpoint for the Stop hook.
+    // The claim key acts as its own bearer token (UUID, unguessable without holding the claim).
+    if (req.method === "POST" && url.pathname === "/release-claim") {
+      let body: unknown;
+      try {
+        body = await req.json();
+      } catch {
+        return new Response("Bad Request", { status: 400 });
+      }
+      const claimKey =
+        typeof (body as Record<string, unknown>)?.claim_key === "string"
+          ? (body as Record<string, string>).claim_key
+          : null;
+      if (!claimKey || !workClaims.has(claimKey)) {
+        return new Response("not_found", { status: 404 });
+      }
+      workClaims.delete(claimKey);
+      log(`Claim released via HTTP: ${claimKey}`);
+      return new Response("released", { status: 200 });
+    }
 
     if (url.pathname !== "/mcp") {
       return new Response(JSON.stringify({ status: "ok", server: "claude-beacon-mux" }), {

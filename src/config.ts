@@ -101,6 +101,13 @@ export interface WorktreeConfig {
    * (i.e. you run `claude` from inside an Agent-managed worktree).
    */
   mode: WorktreeMode;
+  /**
+   * Base directory for temporary worktrees created in "temp" mode.
+   * The actual path is {base_dir}/{repo_slug}-pr-{N}-rebase.
+   * Including the repo slug prevents collisions when multiple repos share the same mux.
+   * Default: "/tmp"
+   */
+  base_dir: string;
 }
 
 export interface PRReviewBehavior {
@@ -164,6 +171,35 @@ export interface SecurityAlertBehavior<S extends string> {
   instruction: string;
 }
 
+export interface PROpenedBehavior {
+  /**
+   * Whether to notify when a PR is opened, reopened, or marked ready for review.
+   * Disabled by default — enable on the session responsible for automated first-pass review.
+   */
+  enabled: boolean;
+  /**
+   * Instruction template appended to PR-opened notifications.
+   *
+   * Available placeholders: {repo}, {pr_number}, {pr_title}, {pr_url},
+   *   {head_branch}, {base_branch}, {author}
+   */
+  instruction: string;
+}
+
+export interface PRApprovedBehavior {
+  /**
+   * Whether to use a separate handler for APPROVED reviews instead of on_pr_review.
+   * Disabled by default. When enabled, APPROVED reviews no longer flow to on_pr_review.
+   */
+  enabled: boolean;
+  /**
+   * Instruction template appended to PR-approved notifications.
+   *
+   * Available placeholders: {repo}, {pr_number}, {pr_title}, {pr_url}, {reviewer}
+   */
+  instruction: string;
+}
+
 export interface BehaviorConfig {
   /** Worktree strategy for all subagent operations. */
   worktrees: WorktreeConfig;
@@ -181,6 +217,10 @@ export interface BehaviorConfig {
   on_dependabot_alert: SecurityAlertBehavior<DependabotMinSeverity>;
   /** Behaviour when a code scanning (SAST) alert is created. */
   on_code_scanning_alert: SecurityAlertBehavior<CodeScanningMinSeverity>;
+  /** Behaviour when a PR is opened, reopened, or marked ready for review. Disabled by default. */
+  on_pr_opened: PROpenedBehavior;
+  /** Behaviour when a reviewer submits an APPROVED review. Disabled by default. */
+  on_pr_approved: PRApprovedBehavior;
 }
 
 export interface Config {
@@ -216,6 +256,7 @@ export const DEFAULT_CONFIG: Config = {
   behavior: {
     worktrees: {
       mode: "temp",
+      base_dir: "/tmp",
     },
     on_ci_failure_main: {
       upstream_sync: true,
@@ -303,6 +344,25 @@ export const DEFAULT_CONFIG: Config = {
         "Review the finding and apply a fix.",
       ].join("\n"),
     },
+    on_pr_opened: {
+      enabled: false,
+      instruction: [
+        'New PR #{pr_number} opened by {author}: "{pr_title}"',
+        "Repo: {repo} | Branch: {head_branch} → {base_branch}",
+        "URL: {pr_url}",
+        "",
+        "Review the PR and leave comments on any issues.",
+      ].join("\n"),
+    },
+    on_pr_approved: {
+      enabled: false,
+      instruction: [
+        'PR #{pr_number} "{pr_title}" has been approved by {reviewer}.',
+        "Repo: {repo} | URL: {pr_url}",
+        "",
+        "The PR is approved — merge when ready or address any remaining tasks.",
+      ].join("\n"),
+    },
   },
   code_style: "",
 };
@@ -315,13 +375,13 @@ export const DEFAULT_CONFIG: Config = {
  * and on_branch_behind instruction templates.
  */
 export function buildWorktreeRebaseSteps(
-  mode: WorktreeMode,
-  vars: { pr_number: string; head_branch: string; base_branch: string },
+  worktrees: WorktreeConfig,
+  vars: { pr_number: string; head_branch: string; base_branch: string; repo: string },
   withConflicts: boolean,
 ): string {
-  const { pr_number, head_branch, base_branch } = vars;
+  const { pr_number, head_branch, base_branch, repo } = vars;
 
-  if (mode === "native") {
+  if (worktrees.mode === "native") {
     // Claude Code's Agent tool manages the worktree automatically when isolation="worktree"
     // is passed. The subagent starts directly inside the isolated worktree branch.
     const rebaseStep = withConflicts
@@ -335,16 +395,19 @@ export function buildWorktreeRebaseSteps(
     ].join("\n");
   }
 
-  // Default: temp worktree via shell commands
+  // Default: temp worktree via shell commands.
+  // Path includes repo slug to prevent collisions when multiple repos share the same machine.
+  const repoSlug = repo.split("/")[1] ?? repo;
+  const worktreePath = `${worktrees.base_dir}/${repoSlug}-pr-${pr_number}-rebase`;
   const rebaseStep = withConflicts
     ? `3. git rebase origin/${base_branch} — fix conflicts, then: git add -A && git rebase --continue`
     : `3. git rebase origin/${base_branch}`;
   return [
-    `1. git worktree add /tmp/pr-${pr_number}-rebase ${head_branch}`,
-    `2. cd /tmp/pr-${pr_number}-rebase && git fetch origin`,
+    `1. git worktree add ${worktreePath} ${head_branch}`,
+    `2. cd ${worktreePath} && git fetch origin`,
     rebaseStep,
     `4. git push --force-with-lease origin ${head_branch}`,
-    `5. git worktree remove /tmp/pr-${pr_number}-rebase`,
+    `5. git worktree remove ${worktreePath}`,
   ].join("\n");
 }
 

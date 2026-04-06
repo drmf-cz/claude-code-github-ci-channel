@@ -83,9 +83,11 @@ behavior:
   #
   #   mode: temp    (default)
   #     Subagents use classic shell commands:
-  #       git worktree add /tmp/pr-<N>-rebase <branch>
+  #       git worktree add {base_dir}/{repo}-pr-<N>-rebase <branch>
   #       ... do work ...
-  #       git worktree remove /tmp/pr-<N>-rebase
+  #       git worktree remove {base_dir}/{repo}-pr-<N>-rebase
+  #     The repo slug is included in the path to prevent collisions when multiple
+  #     repos share the same machine and both have a PR #42 in flight.
   #
   #   mode: native
   #     Subagents are spawned via Claude Code's Agent tool with isolation="worktree".
@@ -93,6 +95,9 @@ behavior:
   #     Use this if you normally work inside Claude Code native worktrees.
   worktrees:
     mode: temp
+    # Base directory for temporary worktrees (mode: temp only). Default: /tmp
+    # Override if /tmp is too small, on a tmpfs, or shared across users.
+    base_dir: /tmp
   # mode: native  ← uncomment if you use Claude Code native worktrees
 
   # Triggered when a workflow_run fails on a main/master branch.
@@ -236,6 +241,29 @@ behavior:
       Details: {alert_url}
 
       Review the finding and apply a fix.
+
+  # Triggered when a PR is opened, reopened, or marked ready for review.
+  # Disabled by default — enable only on the session responsible for automated review.
+  # Placeholders: {repo}, {pr_number}, {pr_title}, {pr_url}, {head_branch}, {base_branch}, {author}
+  on_pr_opened:
+    enabled: false
+    instruction: |
+      New PR #{pr_number} opened by {author}: "{pr_title}"
+      Repo: {repo} | Branch: {head_branch} → {base_branch}
+      URL: {pr_url}
+
+      Review the PR and leave comments on any issues.
+
+  # Triggered when a reviewer submits an APPROVED review.
+  # Disabled by default. When enabled, APPROVED reviews use this handler instead of on_pr_review.
+  # Placeholders: {repo}, {pr_number}, {pr_title}, {pr_url}, {reviewer}
+  on_pr_approved:
+    enabled: false
+    instruction: |
+      PR #{pr_number} "{pr_title}" has been approved by {reviewer}.
+      Repo: {repo} | URL: {pr_url}
+
+      The PR is approved — merge when ready or address any remaining tasks.
 
 # ── Code style guidelines ─────────────────────────────────────────────────────
 # Free-text block prepended to every PR review notification.
