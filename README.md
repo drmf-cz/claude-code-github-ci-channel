@@ -19,10 +19,14 @@ The plugin runs inside your Claude Code session and listens for GitHub events. W
 | `push` to **main/master only** | open PRs exist | Checks each PR's merge status via API, notifies on `dirty` or `behind` |
 | `pull_request` opened/synced | `mergeable_state: dirty` | Spawns subagent to rebase and resolve conflicts |
 | `pull_request` opened/synced | `mergeable_state: behind` | Spawns subagent to rebase cleanly |
-| `pull_request_review` submitted | any non-draft state | Debounced 30 s, then enters plan mode + `pr-comment-response` skill |
+| `pull_request` opened/ready | opt-in via `on_pr_opened.enabled` | Notifies on new PRs opened or marked ready for review |
+| `pull_request_review` APPROVED | opt-in via `on_pr_approved.enabled` | Separate handler for approvals (e.g. auto-merge trigger) |
+| `pull_request_review` submitted | any non-draft, non-APPROVED state | Debounced 30 s, then enters plan mode + `pr-comment-response` skill |
 | `pull_request_review_comment` created | — | Accumulated in same debounce window |
 | `pull_request_review_thread` unresolved | thread re-opened | Accumulated in same debounce window, shown as 🔄 |
 | `issue_comment` created | PR comment (not issue) | Accumulated in same debounce window |
+| `dependabot_alert` created/reintroduced | opt-in via `on_dependabot_alert.enabled` | Notifies about CVE — review and bump the dependency |
+| `code_scanning_alert` created | opt-in via `on_code_scanning_alert.enabled` | Notifies about SAST finding (CodeQL, etc.) — review and apply a fix |
 
 > **Why `push` events for PRs?** GitHub does not fire a `pull_request` event when the base branch advances and makes a PR go `behind`. The only way to detect this is to listen to `push` on main and then query the API for open PRs.
 >
@@ -432,6 +436,26 @@ call claim_notification("<repo>:<branch>")
 
 The claim TTL defaults to 10 minutes (`server.claim_ttl_ms: 600000`). Only one session acts; the others receive `conflict:…` and stand down. Claims are released automatically on TTL expiry or explicitly via `release_claim("<key>")`.
 
+#### Auto-release via Stop hook
+
+When a Claude Code session exits while holding a claim, other sessions wait the full TTL before they can take over. Add a `Stop` hook to your `.claude/settings.json` to release the claim immediately on exit:
+
+```json
+{
+  "hooks": {
+    "Stop": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "claim=$(cat ~/.claude/beacon-active-claim 2>/dev/null) && [ -n \"$claim\" ] && curl -sf -X POST http://localhost:9444/release-claim -H 'Content-Type: application/json' -d \"{\\\"claim_key\\\":\\\"$claim\\\"}\" && rm -f ~/.claude/beacon-active-claim || true"
+      }]
+    }]
+  }
+}
+```
+
+When `claim_notification` succeeds, the mux writes the key to `~/.claude/beacon-active-claim`. The Stop hook reads it and POSTs to `POST /release-claim` on the mux. The hook is idempotent and never blocks — the `|| true` ensures it doesn't interrupt Claude's normal stop flow.
+
 ---
 
 ## YAML configuration file
@@ -512,11 +536,15 @@ These control what Claude is asked to do when an event fires. Each field accepts
 
 | Key | Triggered by | Notable sub-fields |
 |---|---|---|
-| `behavior.on_ci_failure_main.instruction` | `workflow_run` failure on a main branch | `upstream_sync` |
-| `behavior.on_ci_failure_branch.instruction` | `workflow_run` failure on any other branch | `upstream_sync` |
+| `behavior.on_ci_failure_main.instruction` | `workflow_run` failure on a main branch | `upstream_sync`, `use_agent` |
+| `behavior.on_ci_failure_branch.instruction` | `workflow_run` failure on any other branch | `upstream_sync`, `use_agent` |
 | `behavior.on_pr_review.instruction` | PR review / comment events (after debounce) | `require_plan`, `skill`, `use_worktree` |
 | `behavior.on_merge_conflict.instruction` | PR with `mergeable_state: dirty` | — |
 | `behavior.on_branch_behind.instruction` | PR with `mergeable_state: behind` | — |
+| `behavior.on_pr_opened.instruction` | PR opened / reopened / ready for review | `enabled` (default `false`) |
+| `behavior.on_pr_approved.instruction` | PR review submitted with state APPROVED | `enabled` (default `false`) |
+| `behavior.on_dependabot_alert.instruction` | Dependabot CVE alert created or reintroduced | `enabled` (default `false`), `min_severity` |
+| `behavior.on_code_scanning_alert.instruction` | Code scanning (SAST/CodeQL) alert created | `enabled` (default `false`), `min_severity` |
 | `behavior.code_style` | any PR review event | — |
 
 `code_style` is a free-form string prepended to every PR review notification. Describe your project's coding conventions here so Claude applies them consistently when addressing comments.
@@ -526,6 +554,7 @@ These control what Claude is asked to do when an event fires. Each field accepts
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `behavior.worktrees.mode` | `"temp"` \| `"native"` | `"temp"` | `temp`: classic `git worktree add/remove` shell commands. `native`: Claude Code's Agent tool `isolation="worktree"` — Claude manages worktree lifecycle automatically. Use `native` if you work in Claude Code native worktrees. |
+| `behavior.worktrees.base_dir` | string | `"/tmp"` | Base directory for temporary worktrees (`temp` mode only). Path becomes `{base_dir}/{repo}-pr-{N}-rebase` — the repo slug prevents collisions when multiple repos share a machine. |
 
 **`on_pr_review` sub-fields:**
 
@@ -535,7 +564,9 @@ These control what Claude is asked to do when an event fires. Each field accepts
 | `behavior.on_pr_review.skill` | string | `"pr-comment-response"` | Skill name invoked to handle the review |
 | `behavior.on_pr_review.use_worktree` | boolean | `true` | When `true` (default), PR review work runs in a native Claude Code worktree (`isolation="worktree"`), freeing the main session to handle other notifications in parallel |
 
-**CI failure behavior — rebase first:** The default CI failure instructions include a step 0 that fetches and rebases from main before diagnosing the failure. This catches the common case where the failure is already fixed upstream. Controlled by `behavior.on_ci_failure_main.upstream_sync` and `behavior.on_ci_failure_branch.upstream_sync` (both default `true`). Set to `false` on repos where main is frequently broken or you handle rebasing separately.
+**CI failure behavior — rebase first:** The default instructions include a step 0 that fetches and rebases from main before diagnosing the failure. Controlled by `upstream_sync` (default `true`). Set to `false` on repos where main is frequently broken or you handle rebasing separately.
+
+**CI failure — subagent toggle:** By default Claude spawns a subagent via the Agent tool to investigate and fix CI failures, keeping the main session free. Set `use_agent: false` on either `on_ci_failure_main` or `on_ci_failure_branch` to have Claude act inline instead — useful for solo developers who prefer a single context. Controls the `{use_agent_preamble}` placeholder in the instruction template.
 
 **Own-comment skip:** Review notifications from your own GitHub account (i.e., any login in `allowed_authors`) are silently dropped. This prevents an infinite loop where Claude's reply to a review comment triggers another notification.
 
@@ -553,6 +584,8 @@ The following placeholders are replaced at runtime inside `instruction` strings.
 | `{workflow}` | Workflow name |
 | `{status}` | Conclusion (`failure`) |
 | `{commit}` | First line of the head commit message |
+| `{use_agent_preamble}` | "Spawn a subagent…" when `use_agent: true`; "Act inline…" when `false` |
+| `{health_check_step}` | Auto-generated rebase step when `upstream_sync: true`; empty when `false` |
 
 **PR state hooks** (`on_merge_conflict`, `on_branch_behind`):
 
@@ -564,7 +597,7 @@ The following placeholders are replaced at runtime inside `instruction` strings.
 | `{pr_url}` | PR URL |
 | `{head_branch}` | PR head branch |
 | `{base_branch}` | PR base branch |
-| `{worktree_steps}` | Auto-generated rebase steps based on `behavior.worktrees.mode` |
+| `{worktree_steps}` | Auto-generated rebase steps based on `behavior.worktrees` config |
 
 **PR review hook** (`on_pr_review`):
 
@@ -572,6 +605,44 @@ The following placeholders are replaced at runtime inside `instruction` strings.
 |---|---|
 | `{skill}` | Value of `behavior.on_pr_review.skill` |
 | `{worktree_preamble}` | Empty when `use_worktree: false`; a context sentence when `true` |
+
+**PR opened hook** (`on_pr_opened`):
+
+| Placeholder | Value |
+|---|---|
+| `{repo}` | `owner/repo` |
+| `{pr_number}` | Pull request number |
+| `{pr_title}` | PR title (sanitized) |
+| `{pr_url}` | PR URL |
+| `{head_branch}` | PR head branch |
+| `{base_branch}` | PR base branch |
+| `{author}` | GitHub login of the PR author |
+
+**PR approved hook** (`on_pr_approved`):
+
+| Placeholder | Value |
+|---|---|
+| `{repo}` | `owner/repo` |
+| `{pr_number}` | Pull request number |
+| `{pr_title}` | PR title (sanitized) |
+| `{pr_url}` | PR URL |
+| `{reviewer}` | GitHub login of the reviewer who approved |
+
+**Security alert hooks** (`on_dependabot_alert`, `on_code_scanning_alert`):
+
+| Placeholder | Available in | Value |
+|---|---|---|
+| `{repo}` | both | `owner/repo` |
+| `{severity}` | both | Alert severity level |
+| `{alert_url}` | both | GitHub URL of the alert |
+| `{cve}` | dependabot | CVE identifier (e.g. `CVE-2024-1234`), or `"no CVE"` |
+| `{package}` | dependabot | `ecosystem:package-name` |
+| `{patched_version}` | dependabot | First patched version, or `"none available"` |
+| `{rule}` | code scanning | Rule ID (e.g. `js/sql-injection`) |
+| `{tool}` | code scanning | Scanning tool name (e.g. `CodeQL`) |
+| `{branch}` | code scanning | Branch where the finding was detected |
+
+Security alert hooks are **disabled by default** (`enabled: false`). They broadcast to all sessions registered for the repo — enable only on the instance responsible for security triage to avoid multiple sessions racing to fix the same CVE.
 
 ### Minimal example
 
