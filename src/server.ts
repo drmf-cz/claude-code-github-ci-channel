@@ -856,6 +856,12 @@ export function parseDependabotAlertEvent(
   payload: DependabotAlertPayload,
   config: Config = DEFAULT_CONFIG,
 ): CINotification | null {
+  if (!config.behavior.on_dependabot_alert.enabled) {
+    log(
+      "[skip] dependabot_alert: disabled (set behavior.on_dependabot_alert.enabled=true to activate)",
+    );
+    return null;
+  }
   if (payload.action !== "created" && payload.action !== "reintroduced") {
     log(
       `[skip] dependabot_alert: action=${payload.action} (only "created"/"reintroduced" notifies)`,
@@ -912,6 +918,12 @@ export function parseCodeScanningAlertEvent(
   payload: CodeScanningAlertPayload,
   config: Config = DEFAULT_CONFIG,
 ): CINotification | null {
+  if (!config.behavior.on_code_scanning_alert.enabled) {
+    log(
+      "[skip] code_scanning_alert: disabled (set behavior.on_code_scanning_alert.enabled=true to activate)",
+    );
+    return null;
+  }
   if (payload.action !== "created") {
     log(`[skip] code_scanning_alert: action=${payload.action} (only "created" notifies)`);
     return null;

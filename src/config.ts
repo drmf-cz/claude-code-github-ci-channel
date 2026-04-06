@@ -143,6 +143,14 @@ export type CodeScanningMinSeverity = "note" | "warning" | "error";
 
 export interface SecurityAlertBehavior<S extends string> {
   /**
+   * Whether this alert handler is active. Defaults to false.
+   *
+   * Security alerts broadcast to ALL sessions registered for the repo. In shared/team
+   * environments, multiple Claude Code instances would all receive the alert. Set to true
+   * only on the single instance responsible for security triage.
+   */
+  enabled: boolean;
+  /**
    * Minimum severity required to trigger a notification.
    * Alerts below this threshold are silently skipped.
    */
@@ -275,6 +283,7 @@ export const DEFAULT_CONFIG: Config = {
       ].join("\n"),
     },
     on_dependabot_alert: {
+      enabled: false,
       min_severity: "medium",
       instruction: [
         "🚨 Dependabot alert on {repo}: {severity} vulnerability in {package} ({cve})",
@@ -285,6 +294,7 @@ export const DEFAULT_CONFIG: Config = {
       ].join("\n"),
     },
     on_code_scanning_alert: {
+      enabled: false,
       min_severity: "warning",
       instruction: [
         "🔍 Code scanning alert on {repo} ({branch}): {rule} [{severity}] via {tool}",

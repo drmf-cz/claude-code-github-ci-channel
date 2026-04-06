@@ -1052,6 +1052,14 @@ describe("createMcpServer — startup resource", () => {
 
 // ── parseDependabotAlertEvent ─────────────────────────────────────────────────
 describe("parseDependabotAlertEvent", () => {
+  const enabledConfig = {
+    ...DEFAULT_CONFIG,
+    behavior: {
+      ...DEFAULT_CONFIG.behavior,
+      on_dependabot_alert: { ...DEFAULT_CONFIG.behavior.on_dependabot_alert, enabled: true },
+    },
+  };
+
   const basePayload: DependabotAlertPayload = {
     action: "created",
     alert: {
@@ -1072,8 +1080,12 @@ describe("parseDependabotAlertEvent", () => {
     repository: { full_name: "acme/repo" },
   };
 
+  it("returns null when disabled (default)", () => {
+    expect(parseDependabotAlertEvent(basePayload)).toBeNull();
+  });
+
   it("returns a notification for a created alert above min_severity", () => {
-    const result = parseDependabotAlertEvent(basePayload);
+    const result = parseDependabotAlertEvent(basePayload, enabledConfig);
     expect(result).not.toBeNull();
     expect(result?.summary).toContain("acme/repo");
     expect(result?.summary).toContain("CVE-2021-23337");
@@ -1084,15 +1096,24 @@ describe("parseDependabotAlertEvent", () => {
   });
 
   it("returns a notification for a reintroduced alert", () => {
-    const result = parseDependabotAlertEvent({ ...basePayload, action: "reintroduced" });
+    const result = parseDependabotAlertEvent(
+      { ...basePayload, action: "reintroduced" },
+      enabledConfig,
+    );
     expect(result).not.toBeNull();
     expect(result?.meta.action).toBe("reintroduced");
   });
 
   it("returns null for non-actionable actions", () => {
-    expect(parseDependabotAlertEvent({ ...basePayload, action: "dismissed" })).toBeNull();
-    expect(parseDependabotAlertEvent({ ...basePayload, action: "fixed" })).toBeNull();
-    expect(parseDependabotAlertEvent({ ...basePayload, action: "auto_dismissed" })).toBeNull();
+    expect(
+      parseDependabotAlertEvent({ ...basePayload, action: "dismissed" }, enabledConfig),
+    ).toBeNull();
+    expect(
+      parseDependabotAlertEvent({ ...basePayload, action: "fixed" }, enabledConfig),
+    ).toBeNull();
+    expect(
+      parseDependabotAlertEvent({ ...basePayload, action: "auto_dismissed" }, enabledConfig),
+    ).toBeNull();
   });
 
   it("returns null when severity is below min_severity", () => {
@@ -1107,8 +1128,7 @@ describe("parseDependabotAlertEvent", () => {
       },
     };
     // Default min_severity is "medium" — "low" should be skipped
-    const result = parseDependabotAlertEvent(lowPayload);
-    expect(result).toBeNull();
+    expect(parseDependabotAlertEvent(lowPayload, enabledConfig)).toBeNull();
   });
 
   it("includes 'none available' when no patched version exists", () => {
@@ -1122,8 +1142,9 @@ describe("parseDependabotAlertEvent", () => {
         },
       },
     };
-    const result = parseDependabotAlertEvent(noPatchPayload);
-    expect(result?.summary).toContain("none available");
+    expect(parseDependabotAlertEvent(noPatchPayload, enabledConfig)?.summary).toContain(
+      "none available",
+    );
   });
 
   it("sanitizes the advisory summary (prompt injection guard)", () => {
@@ -1137,7 +1158,7 @@ describe("parseDependabotAlertEvent", () => {
         },
       },
     };
-    const result = parseDependabotAlertEvent(injectionPayload);
+    const result = parseDependabotAlertEvent(injectionPayload, enabledConfig);
     expect(result?.summary).not.toContain("\x00");
     expect(result?.summary).not.toContain("\u202E");
   });
@@ -1154,12 +1175,20 @@ describe("parseDependabotAlertEvent", () => {
       },
     };
     // Default min_severity is "medium" — exact match should notify
-    expect(parseDependabotAlertEvent(mediumPayload)).not.toBeNull();
+    expect(parseDependabotAlertEvent(mediumPayload, enabledConfig)).not.toBeNull();
   });
 });
 
 // ── parseCodeScanningAlertEvent ───────────────────────────────────────────────
 describe("parseCodeScanningAlertEvent", () => {
+  const enabledConfig = {
+    ...DEFAULT_CONFIG,
+    behavior: {
+      ...DEFAULT_CONFIG.behavior,
+      on_code_scanning_alert: { ...DEFAULT_CONFIG.behavior.on_code_scanning_alert, enabled: true },
+    },
+  };
+
   const basePayload: CodeScanningAlertPayload = {
     action: "created",
     alert: {
@@ -1177,8 +1206,12 @@ describe("parseCodeScanningAlertEvent", () => {
     repository: { full_name: "acme/repo" },
   };
 
+  it("returns null when disabled (default)", () => {
+    expect(parseCodeScanningAlertEvent(basePayload)).toBeNull();
+  });
+
   it("returns a notification for a created alert above min_severity", () => {
-    const result = parseCodeScanningAlertEvent(basePayload);
+    const result = parseCodeScanningAlertEvent(basePayload, enabledConfig);
     expect(result).not.toBeNull();
     expect(result?.summary).toContain("acme/repo");
     expect(result?.summary).toContain("js/sql-injection");
@@ -1189,8 +1222,12 @@ describe("parseCodeScanningAlertEvent", () => {
   });
 
   it("returns null for non-actionable actions", () => {
-    expect(parseCodeScanningAlertEvent({ ...basePayload, action: "fixed" })).toBeNull();
-    expect(parseCodeScanningAlertEvent({ ...basePayload, action: "closed_by_user" })).toBeNull();
+    expect(
+      parseCodeScanningAlertEvent({ ...basePayload, action: "fixed" }, enabledConfig),
+    ).toBeNull();
+    expect(
+      parseCodeScanningAlertEvent({ ...basePayload, action: "closed_by_user" }, enabledConfig),
+    ).toBeNull();
   });
 
   it("returns null when severity is below min_severity", () => {
@@ -1202,7 +1239,7 @@ describe("parseCodeScanningAlertEvent", () => {
       },
     };
     // Default min_severity is "warning" — "note" should be skipped
-    expect(parseCodeScanningAlertEvent(notePayload)).toBeNull();
+    expect(parseCodeScanningAlertEvent(notePayload, enabledConfig)).toBeNull();
   });
 
   it("fires at min_severity threshold (exact match)", () => {
@@ -1213,11 +1250,11 @@ describe("parseCodeScanningAlertEvent", () => {
         rule: { ...basePayload.alert.rule, severity: "warning" },
       },
     };
-    expect(parseCodeScanningAlertEvent(warningPayload)).not.toBeNull();
+    expect(parseCodeScanningAlertEvent(warningPayload, enabledConfig)).not.toBeNull();
   });
 
   it("strips refs/heads/ prefix from branch in meta", () => {
-    const result = parseCodeScanningAlertEvent(basePayload);
+    const result = parseCodeScanningAlertEvent(basePayload, enabledConfig);
     expect(result?.meta.branch).toBe("feat/my-feature");
     expect(result?.meta.branch).not.toContain("refs/heads/");
   });
@@ -1234,7 +1271,7 @@ describe("parseCodeScanningAlertEvent", () => {
         },
       },
     };
-    const result = parseCodeScanningAlertEvent(injectionPayload);
+    const result = parseCodeScanningAlertEvent(injectionPayload, enabledConfig);
     expect(result?.summary).not.toContain("\x00");
     expect(result?.summary).not.toContain("\u202E");
   });
